@@ -1,0 +1,22 @@
+simulhausen
+Copyright 2026 Ilya Lubenets
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes material adapted from LangWatch Scenario
+(https://github.com/langwatch/scenario, published on PyPI as
+`langwatch-scenario`), Copyright LangWatch, licensed under the Apache License,
+Version 2.0:
+
+  - The public API (`run`, the `user` / `agent` / `message` / `proceed` /
+    `judge` / `succeed` / `fail` script steps, `UserSimulatorAgent`,
+    `JudgeAgent`, `AgentAdapter`, `AgentInput`, `ScenarioState`,
+    `ScenarioResult`, `configure`) follows Scenario's design.
+  - The user simulator and judge prompts in `src/simulhausen/prompts.py` are
+    adapted from Scenario's `user_simulator_agent.py`, `judge_agent.py` and
+    `_judge/criterion_verdicts.py`; some of the judge rules are close to
+    verbatim. They were modified for agno structured output, the
+    `goal_achieved` stop signal and fenced untrusted evidence.
+
+The implementation itself is independent and copies no other upstream code.
+LangWatch Scenario ships no NOTICE file of its own.

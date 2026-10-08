@@ -1,0 +1,156 @@
+[project]
+name = "simulhausen"
+version = "0.1.0"
+description = "Local simulation testing for agno agents: an LLM plays the user, an LLM judge grades the dialogue criterion by criterion."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    { name = "Ilya Lubenets", email = "lubenets.ilya.igorevich@gmail.com" }
+]
+requires-python = ">=3.12"
+keywords = ["agents", "agno", "llm", "testing", "simulation", "evaluation", "llm-as-a-judge", "pytest"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    # 3.x is what the framework is tested against; JudgeScorer and the
+    # parser_model/output_schema split it relies on landed in 2.8.
+    "agno>=3.0,<4",
+    "pydantic>=2.10",
+    # agno already depends on rich; pinned here because reporting imports it directly.
+    "rich>=13",
+]
+
+[project.urls]
+Homepage = "https://github.com/ormeilu/simulhausen"
+Repository = "https://github.com/ormeilu/simulhausen"
+Issues = "https://github.com/ormeilu/simulhausen/issues"
+Changelog = "https://github.com/ormeilu/simulhausen/blob/main/CHANGELOG.md"
+
+# pytest picks the plugin up automatically once the package is installed:
+# --sim-benchmark, --sim-report, --sim-report-md and the terminal summary.
+[project.entry-points.pytest11]
+simulhausen = "simulhausen.pytest_plugin"
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "prek>=0.5.5",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.16.0",
+    "ruff>=0.16.10",
+    "ty>=0.0.85",
+]
+# The just binary comes from PyPI (rust-just), not from brew/apt.
+just = [
+    "rust-just>=1.36.0,<2",
+]
+
+[tool.uv]
+default-groups = ["dev", "just"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.ruff.lint]
+# https://docs.astral.sh/ruff/rules/
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # flake8-async: blocking calls inside coroutines stall the whole event loop
+    "ASYNC",
+    # flake8-blind-except: mark deliberate best-effort catches with `# noqa: BLE001`
+    "BLE",
+    # flake8-comprehensions
+    "C4",
+    # flake8-logging + flake8-logging-format: keep stack traces, no f-strings in log calls
+    "LOG",
+    "G",
+    # perflint
+    "PERF",
+    # tryceratops
+    "TRY",
+    # flake8-type-checking: typing-only imports go under TYPE_CHECKING
+    "TC",
+    # ruff-specific rules
+    "RUF",
+]
+ignore = [
+    # TODOs
+    "FIX",
+    # Long messages inside raise are fine: they are addressed to the test author.
+    "TRY003",
+    # return inside try instead of else is a style preference, it catches no bugs.
+    "TRY300",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["TC"]
+# Prompts are sent to the model verbatim; wrapping lines would change them.
+"src/simulhausen/prompts.py" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# -p no:simulhausen: the entry-point plugin would import the package before
+# coverage starts and hide module-level lines; plugin tests run pytester subprocesses.
+addopts = "-ra -p no:simulhausen --cov=simulhausen --cov-report=term-missing"
+testpaths = ["tests"]
+markers = [
+    "simulation: scenario simulation tests that call real LLMs",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+    "\\.\\.\\.",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", "examples", ".venv", "dist"]
+
+[tool.ty.environment]
+# Lowest supported runtime: ty resolves stdlib stubs for it, so newer-only APIs get flagged.
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["src", "tests", "examples"]
+
+[tool.ty.rules]
+unused-ignore-comment = "ignore"

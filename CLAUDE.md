@@ -33,7 +33,7 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
 - `has_tool_call` and friends count only clean executions (no error, not paused), matching agno's
   `ToolCallScorer`.
 - Prompt text in `prompts.py` goes to the model verbatim (hence its E501 exemption). A wording change is a
-  behaviour change: note it in `CHANGELOG.md`.
+  behaviour change: commit it as `feat:` or `fix:` so it reaches the changelog.
 - Untrusted data (transcript, RAG references, tool results, additional context) reaches the judge only through
   `_fence()` in `agents.py`.
 
@@ -44,9 +44,15 @@ from upstream (`github.com/langwatch/scenario`, `python/scenario/`) gets a line 
 
 ## Releasing
 
-1. `uv version --bump minor` (or `patch`), move the `Unreleased` notes in `CHANGELOG.md` under the new version.
-2. Merge to `main`, then publish a GitHub release tagged `v<version>`.
-3. `.github/workflows/release.yml` checks the tag against `pyproject.toml`, builds, and publishes to PyPI through
-   Trusted Publishing (environment `pypi`, no token).
+release-please owns versions and the changelog: `pyproject.toml`'s version, the `simulhausen` entry in `uv.lock`,
+`CHANGELOG.md` and `.release-please-manifest.json` change only through its Release PR.
 
-Commits follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
+- Commit types drive the bump (Conventional Commits): `fix:` patch, `feat:` minor, `feat!:` / `BREAKING CHANGE:`
+  minor while below 1.0 (`bump-minor-pre-major`). `feat`, `fix`, `perf`, `revert`, `docs` and `deps` reach the
+  changelog; `refactor`, `test`, `ci` and `chore` stay hidden.
+- Every push to `main` updates the open Release PR. Merging it tags `v<version>`, creates the GitHub release, and
+  `.github/workflows/release.yml` re-runs the tests, builds and publishes to PyPI through Trusted Publishing
+  (environment `pypi`; the publisher is registered for `release.yml`, so the file keeps that name).
+- A release PR opened with `GITHUB_TOKEN` gets no CI run of its own; its only changes are the version and the
+  changelog, and the release job runs the tests again before publishing.
+- To force a version, add a `Release-As: x.y.z` footer to a commit on `main`.

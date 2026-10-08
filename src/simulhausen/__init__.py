@@ -54,7 +54,8 @@ from simulhausen.types import (
 try:
     __version__ = version("simulhausen")
 except PackageNotFoundError:  # pragma: no cover - running from a source tree without metadata
-    __version__ = "0.0.0"
+    # Not an X.Y.Z literal on purpose: release-please rewrites those in this file.
+    __version__ = "0+unknown"
 
 __all__ = [
     "AgentAdapter",

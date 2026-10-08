@@ -1,25 +1,56 @@
 name: Release
-# Publishes to PyPI through Trusted Publishing (OIDC), no API token stored.
-# One-time setup on pypi.org: add a (pending) publisher for project `simulhausen`,
-# owner `ormeilu`, repository `simulhausen`, workflow `release.yml`, environment `pypi`.
+# release-please keeps a Release PR open with the next version (pyproject.toml,
+# uv.lock) and the CHANGELOG, built from Conventional Commits on main. Merging
+# that PR tags v<version>, creates the GitHub release, and publishes to PyPI
+# below through Trusted Publishing (OIDC, no token stored).
+#
+# Publishing lives in this workflow on purpose: a release created with
+# GITHUB_TOKEN does not trigger other workflows, and the PyPI trusted
+# publisher is registered for this file (release.yml) and environment `pypi`.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
   build:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
       - uses: astral-sh/setup-uv@v10.2.0
       - name: Check the tag matches the package version
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
           version="$(uv version --short)"
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${version}" >&2
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "tag ${TAG} does not match pyproject version ${version}" >&2
             exit 1
           fi
+      - run: uv sync --locked
+      - run: uv run pytest
       - run: uv build
       - uses: actions/upload-artifact@v7
         with:

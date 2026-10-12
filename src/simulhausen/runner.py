@@ -9,8 +9,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from simulhausen._cache import cached_acall, caching_context, scenario_context
 from simulhausen.agents import JudgeAgent, UserSimulatorAgent, UserTurn
-from simulhausen.cache import cached_acall, caching_context, scenario_context
 from simulhausen.config import check_cache_key, get_config
 from simulhausen.exceptions import SimulationHarnessError
 from simulhausen.reporting import collector
@@ -36,28 +36,6 @@ if TYPE_CHECKING:
 __all__ = ["run"]
 
 logger = logging.getLogger(__name__)
-
-
-def _fingerprint(agent: UserSimulatorAgent | JudgeAgent) -> dict[str, object]:
-    """The settings of a helper agent that shape its answers: part of every cache key.
-
-    Models enter by ``id`` (a model object's repr carries client handles and addresses).
-    Whatever the call itself takes, such as the judge's effective criteria, is keyed
-    separately by the caller.
-    """
-    config = get_config()
-    model = agent._model or config.model
-    parser_model = agent._parser_model or config.parser_model
-    fingerprint: dict[str, object] = {
-        "model": getattr(model, "id", None),
-        "parser_model": getattr(parser_model, "id", None),
-        "system_prompt": agent.system_prompt,
-    }
-    if isinstance(agent, UserSimulatorAgent):
-        fingerprint["persona"] = agent.persona
-    else:
-        fingerprint["score_threshold"] = agent.score_threshold
-    return fingerprint
 
 
 async def _call(callback: StateCallback | None, state: ScenarioState) -> object:
@@ -149,7 +127,7 @@ class _Simulation:
             return await call()
         identity = f"{type(agent).__module__}.{type(agent).__qualname__}.{method}"
         return await cached_acall(
-            context, identity, {"agent": _fingerprint(agent), "state": self.state, **arguments}, call
+            context, identity, {"agent": agent.cache_fingerprint(), "state": self.state, **arguments}, call
         )
 
     async def _simulated_turn(self) -> UserTurn:

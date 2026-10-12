@@ -21,8 +21,7 @@ from agno.models.response import ToolExecution
 
 import simulhausen as sim
 from simulhausen import AgentInput, CriterionVerdict, JudgeVerdict, ScenarioState, UserTurn
-from simulhausen.agents import _TurnDecision
-from simulhausen.cache import (
+from simulhausen._cache import (
     ScenarioContext,
     _canonical,
     cache_dir,
@@ -30,6 +29,7 @@ from simulhausen.cache import (
     current_context,
     scenario_context,
 )
+from simulhausen.agents import _TurnDecision
 
 KEY = "suite-v1"
 
@@ -227,7 +227,7 @@ def test_hits_and_misses_are_logged_at_debug_level(caplog: pytest.LogCaptureFixt
     def double(x: int) -> int:
         return x * 2
 
-    with caplog.at_level(logging.DEBUG, logger="simulhausen.cache"), running():
+    with caplog.at_level(logging.DEBUG, logger="simulhausen._cache"), running():
         double(1)
         double(1)
 
@@ -650,7 +650,7 @@ def test_a_damaged_entry_is_a_miss_and_gets_overwritten(
     entry = _stored_entry(cache_dir)
     entry.write_bytes(garbage)
 
-    with caplog.at_level(logging.WARNING, logger="simulhausen.cache"), running():
+    with caplog.at_level(logging.WARNING, logger="simulhausen._cache"), running():
         assert double(2) == 4  # recomputed
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
     assert entry.name in caplog.records[0].message
@@ -697,7 +697,7 @@ def test_a_failed_write_is_logged_leaves_no_temporary_file_and_keeps_the_result(
     def double(x: int) -> int:
         return x * 2
 
-    with monkeypatch.context() as patch, caplog.at_level(logging.WARNING, logger="simulhausen.cache"), running():
+    with monkeypatch.context() as patch, caplog.at_level(logging.WARNING, logger="simulhausen._cache"), running():
         patch.setattr(os, "replace", broken)
         assert double(1) == 2
 
@@ -712,7 +712,7 @@ def test_an_unpicklable_result_is_returned_and_logged_not_stored(
     def make(x: int) -> Callable[[], int]:
         return lambda: x
 
-    with caplog.at_level(logging.WARNING, logger="simulhausen.cache"), running():
+    with caplog.at_level(logging.WARNING, logger="simulhausen._cache"), running():
         assert make(1)() == 1
 
     assert not cache_dir.exists()

@@ -28,7 +28,7 @@ from simulhausen import (
     UserTurn,
     collector,
 )
-from simulhausen.cache import ScenarioContext, current_context
+from simulhausen._cache import ScenarioContext, current_context
 from simulhausen.script import ScriptStep
 
 type Round = CriterionStatus | list[CriterionStatus]
@@ -1251,6 +1251,8 @@ class Variant:
         Variant(judge={"criteria": ["is brief"]}, judge_called=True),
         Variant(judge={"system_prompt": "Be strict."}, judge_called=True),
         Variant(judge={"score_threshold": 7}, judge_called=True),
+        Variant(judge={"token_threshold": 100}, judge_called=True),
+        Variant(judge={"max_discovery_steps": 3}, judge_called=True),
         Variant(judge={"model": _model("judge-model")}, judge_called=True),
         Variant(user={"persona": "impatient"}, simulator_called=True),
         Variant(user={"system_prompt": "You are the user."}, simulator_called=True),
@@ -1263,6 +1265,8 @@ class Variant:
         "judge criteria",
         "judge system prompt",
         "judge score threshold",
+        "judge token threshold",
+        "judge discovery steps",
         "judge model",
         "persona",
         "user system prompt",

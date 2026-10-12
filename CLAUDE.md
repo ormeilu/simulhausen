@@ -37,12 +37,10 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
   behaviour change: commit it as `feat:` or `fix:` so it reaches the changelog.
 - Untrusted data (transcript, RAG references, tool results, additional context) reaches the judge only through
   `_fence()` in `agents.py`.
-- The response cache (`cache.py`) wraps the helper agents at the runner's call sites (`_helper_call`), keyed by
-  `_fingerprint()` plus the call's arguments and the state. A new `UserSimulatorAgent` / `JudgeAgent` option that
-  changes what the model is asked or answers goes into `_fingerprint()` (or into the call's arguments), or reruns
-  replay stale answers. A subclass with hidden state sets `cacheable = False`. The package attribute
-  `simulhausen.cache` is the decorator and shadows the submodule, so write `from simulhausen.cache import ...`
-  (not `import simulhausen.cache as m` or a dotted `monkeypatch.setattr` target).
+- The response cache (`_cache.py`) wraps the helper agents at the runner's call sites (`_helper_call`), keyed by
+  the agent's `cache_fingerprint()` plus the call's arguments and the state. A new `UserSimulatorAgent` /
+  `JudgeAgent` option that changes what the model is asked or answers goes into `cache_fingerprint()` (or into the
+  call's arguments), or reruns replay stale answers. A subclass with hidden state sets `cacheable = False`.
 
 ## Licensing
 

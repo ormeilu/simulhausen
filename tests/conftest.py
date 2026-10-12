@@ -5,6 +5,7 @@ from dataclasses import fields
 from pathlib import Path
 
 import pytest
+from red_team_support import FakeLLM
 
 from simulhausen import SimulationConfig, collector, get_config
 
@@ -33,3 +34,11 @@ def cache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "response-cache"
     monkeypatch.setenv("SIMULHAUSEN_CACHE_DIR", str(path))
     return path
+
+
+@pytest.fixture
+def llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
+    """Replaces the agno agents the red-team agent builds with a scripted fake."""
+    fake = FakeLLM()
+    fake.install(monkeypatch)
+    return fake

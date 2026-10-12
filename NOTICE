@@ -30,6 +30,13 @@ Version 2.0:
     `configure` and `run`, caching of the user simulator's and the judge's
     answers) follows Scenario's `cache.py`. The implementation uses the
     standard library instead of joblib and wrapt.
+  - The red-team module in `src/simulhausen/red_team/` is adapted from
+    Scenario's `red_team_agent.py` and `_red_team/`: the Crescendo and GOAT
+    strategies, the attack-plan, scorer and attacker prompts in
+    `red_team/prompts.py` (close to verbatim where they are), the encoding
+    techniques, the refusal patterns, and the design of backtracking, early
+    exit and `marathon_script`. The code is rewritten for agno models,
+    schema-bound output and `ScenarioState`.
 
 Apart from the items above, the implementation is independent and copies no
 other upstream code.

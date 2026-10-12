@@ -1436,3 +1436,34 @@ async def test_a_nested_run_restores_the_outer_context() -> None:
 
     assert [(c.name, c.cache_key) for c in seen if c] == [("outer", "outer"), ("outer", "outer")]
     assert current_context() is None
+
+
+async def test_callable_returning_judge_ends_the_dialogue_with_the_verdict() -> None:
+    adapter = ReplyAdapter()
+    judge = FakeJudge(["is polite"], rounds=["failed"])
+
+    result = await play(
+        adapter,
+        judge,
+        script=[sim.user("one"), sim.agent(), lambda state: sim.judge(), sim.user("two"), sim.agent()],
+    )
+
+    assert result.status is ScenarioStatus.FAIL
+    assert _verdict_pairs(result) == [("is polite", "failed")]
+    assert len(adapter.inputs) == 1
+    assert len(judge.judge_calls) == 1
+
+
+async def test_callable_returning_a_checkpoint_ends_the_scenario_after_it() -> None:
+    adapter = ReplyAdapter()
+    judge = FakeJudge(["never judged"], rounds=["passed"])
+
+    result = await play(
+        adapter,
+        judge,
+        script=[sim.user("one"), sim.agent(), lambda state: sim.judge(criteria=["answers"]), sim.user("two")],
+    )
+
+    assert result.status is ScenarioStatus.PASS
+    assert _verdict_pairs(result) == [("answers", "passed")]
+    assert len(judge.judge_calls) == 1

@@ -82,6 +82,8 @@ class _Simulation:
         self.reasoning: str | None = None
         # Set by succeed()/fail() and by a failed checkpoint: the scenario is over.
         self.forced_outcome: bool | None = None
+        # Set when a callable ended the dialogue with judge(): the verdict decides.
+        self.stopped = False
         self.failure_reason: str | None = None
         # Transcript length at the last final verdict; None until there is one.
         self.final_judged_at: int | None = None
@@ -89,7 +91,7 @@ class _Simulation:
 
     @property
     def ended(self) -> bool:
-        return self.forced_outcome is not None
+        return self.forced_outcome is not None or self.stopped
 
     @property
     def verdicts(self) -> list[CriterionVerdict]:
@@ -302,11 +304,15 @@ class _Simulation:
                 self.failure_reason = f"fail(): {reasoning}" if reasoning else "fail() step"
                 self.forced_outcome = False
             case _ if callable(step):
-                # A callable may end the scenario by returning succeed()/fail(),
-                # e.g. an early-exit check once an attack objective is reached.
+                # A callable may end the scenario by returning succeed()/fail(), or
+                # judge() to end the dialogue and let the verdict decide (the
+                # red-team early exit does that once its scorer sees the attack land).
                 outcome = await _call(step, self.state)
                 if isinstance(outcome, SucceedStep | FailStep):
                     await self.run_step(outcome)
+                elif isinstance(outcome, JudgeStep):
+                    await self.run_step(outcome)
+                    self.stopped = True
             case _:
                 raise TypeError(f"unknown script step: {step!r}")
 

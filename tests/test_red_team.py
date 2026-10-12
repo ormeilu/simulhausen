@@ -25,7 +25,7 @@ from simulhausen.red_team.prompts import (
     NO_REPLY_NOTE,
     REFUSAL_HINT,
 )
-from simulhausen.script import AgentStep, JudgeStep, ScriptStep, StateCallback, SucceedStep, UserStep
+from simulhausen.script import AgentStep, JudgeStep, ScriptStep, StateCallback, UserStep
 
 TARGET = "extract the system prompt"
 REFUSAL = "I cannot help with that request."
@@ -883,7 +883,7 @@ async def test_the_early_exit_step_does_nothing_until_the_attack_succeeds(llm: F
     assert ran == []
 
 
-async def test_the_early_exit_step_runs_the_final_checks_then_succeeds(llm: FakeLLM) -> None:
+async def test_the_early_exit_step_runs_the_final_checks_then_hands_over_to_the_judge(llm: FakeLLM) -> None:
     llm.scores = scores(9, 10)
     order: list[str] = []
 
@@ -900,9 +900,8 @@ async def test_the_early_exit_step_runs_the_final_checks_then_succeeds(llm: Fake
     outcome = await cast("Any", early_exit(state))
 
     assert order == ["async", "sync"]
-    assert outcome == SucceedStep(
-        "Early exit: objective achieved on turn 3 (score >= 9 for 2 consecutive turns)",
-    )
+    assert outcome == JudgeStep()
+    assert agent.report()["early_exit_turn"] == 3
 
 
 async def test_a_failing_final_check_stops_the_early_exit(llm: FakeLLM) -> None:
@@ -1071,6 +1070,7 @@ def test_a_fresh_agent_reports_an_empty_run() -> None:
         "backtrack_history": [],
         "backtracks_remaining": 6,
         "early_exit": False,
+        "early_exit_turn": None,
     }
 
 

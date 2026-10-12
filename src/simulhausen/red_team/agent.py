@@ -37,7 +37,6 @@ from simulhausen.red_team.prompts import (
     SCORER_PROMPT,
 )
 from simulhausen.red_team.techniques import DEFAULT_TECHNIQUES, AttackTechnique
-from simulhausen.script import SucceedStep, succeed
 from simulhausen.script import agent as agent_step
 from simulhausen.script import judge as judge_step
 from simulhausen.script import user as user_step
@@ -48,7 +47,7 @@ if TYPE_CHECKING:
     from agno.models.base import Model
 
     from simulhausen.red_team.goat import GoatTechnique
-    from simulhausen.script import ScriptStep, StateCallback
+    from simulhausen.script import JudgeStep, ScriptStep, StateCallback
     from simulhausen.types import ScenarioState
 
 __all__ = ["AttackRecord", "BacktrackRecord", "RedTeamAgent", "RedTeamOptions", "ResponseScore", "detect_refusal"]
@@ -304,6 +303,8 @@ class RedTeamAgent(UserSimulatorAgent):
         self._turn_scores: dict[int, tuple[int, str]] = {}
         self._backtracks_remaining = self._max_backtracks
         self._backtrack_history: list[BacktrackRecord] = []
+        # Agent reply after which marathon_script's early exit handed the dialogue to the judge.
+        self._early_exit_turn: int | None = None
         self._attacks: list[AttackRecord] = []
         # thread_id of the one run this instance may serve.
         self._run_thread_id: str | None = None
@@ -388,6 +389,7 @@ class RedTeamAgent(UserSimulatorAgent):
             "backtrack_history": self.backtrack_history,
             "backtracks_remaining": self._backtracks_remaining,
             "early_exit": self.check_early_exit(),
+            "early_exit_turn": self._early_exit_turn,
         }
 
     # -- early exit and scripts -----------------------------------------------
@@ -421,13 +423,14 @@ class RedTeamAgent(UserSimulatorAgent):
         ``total_turns`` is a hard cap: backtracked turns count against it, so a run with
         many backtracks lands fewer effective attacks, but never runs longer.
 
-        The early-exit step fires when :meth:`check_early_exit` is true: it runs
-        ``final_checks`` and ends the scenario with ``succeed(...)``, **skipping the judge**.
-        The scorer thinks the attacker won, so such a run passes only if a check raises.
-        Put the assertions that decide the verdict into ``checks`` and ``final_checks``, or
-        pass ``success_score=None`` to always play every turn and judge the whole dialogue.
-        Scores lag by a reply (the newest reply is scored when the next attack is
-        written), so the exit comes a turn after the confirming reply.
+        The early-exit step fires when :meth:`check_early_exit` is true, that is when the
+        scorer believes the attack landed: it stops attacking, runs ``final_checks`` and
+        returns ``judge()``, so the judge rules on the dialogue so far and the scenario
+        ends with that verdict. (LangWatch Scenario ends with ``succeed()`` here and skips
+        the judge, which passes the very runs where the attacker won.) Pass
+        ``success_score=None`` to always play every turn. Scores lag by a reply (the
+        newest reply is scored when the next attack is written), so the exit comes a
+        turn after the confirming reply.
         """
         per_turn = list(checks or [])
         closing = list(final_checks or [])
@@ -441,17 +444,22 @@ class RedTeamAgent(UserSimulatorAgent):
         return steps
 
     def _early_exit_step(self, final_checks: Sequence[StateCallback]) -> StateCallback:
-        async def early_exit(state: ScenarioState) -> SucceedStep | None:
+        async def early_exit(state: ScenarioState) -> JudgeStep | None:
             if not self.check_early_exit():
                 return None
+            logger.info(
+                "[%s] red team: early exit after reply %d (score >= %s for %d consecutive replies), judging now",
+                state.name,
+                state.current_turn,
+                self.success_score,
+                self.success_confirm_turns,
+            )
+            self._early_exit_turn = state.current_turn
             for check in final_checks:
                 outcome = check(state)
                 if inspect.isawaitable(outcome):
                     await outcome
-            return succeed(
-                f"Early exit: objective achieved on turn {state.current_turn} "
-                f"(score >= {self.success_score} for {self.success_confirm_turns} consecutive turns)"
-            )
+            return judge_step()
 
         return early_exit
 
@@ -538,6 +546,7 @@ class RedTeamAgent(UserSimulatorAgent):
             self._turn_scores = {}
             self._backtracks_remaining = self._max_backtracks
             self._backtrack_history = []
+            self._early_exit_turn = None
             self._attacks = []
 
     def _render_metaprompt(self, description: str) -> str:

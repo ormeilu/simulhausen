@@ -118,7 +118,7 @@ and in which order:
 | `judge()` | final verdict on the judge's criteria; later steps still run |
 | `judge(criteria=[...], additional_context=...)` | checkpoint: fails the scenario on the spot if a criterion fails, goes on otherwise |
 | `succeed(reasoning)` / `fail(reasoning)` | end the scenario right here |
-| any callable | gets the `ScenarioState`; sync or async; raise `AssertionError` to fail, return `succeed()`/`fail()` to end the scenario |
+| any callable | gets the `ScenarioState`; sync or async; raise `AssertionError` to fail, return `succeed()`/`fail()` to end the scenario, or `judge()` to end the dialogue and let the verdict decide |
 
 `proceed()` stops at the first of these: `turns` turns played, `max_turns` reached, the simulator reporting the
 goal as achieved, or the judge concluding it has seen enough. The judge is not consulted before `min_turns`
@@ -286,11 +286,11 @@ limits belong to the agno model; there are no per-call knobs.
 a scripted run, replaces `max_turns`.
 
 When the last `success_confirm_turns` scores (default 2) are all at least `success_score` (default 9), the scorer
-thinks the attack worked and the script stops early. It runs `final_checks` and ends the scenario with
-`succeed(...)`. The judge is not asked on this path, so an early exit passes unless one of your checks raises. Put
-the assertions that decide the verdict into `checks` and `final_checks`, or set `success_score=None` to play every
-turn and let the judge rule on the whole dialogue. Scores trail the dialogue by one reply, because the newest reply
-is scored when the next attack is written.
+thinks the attack worked and the attack stops early: the script runs `final_checks`, then the judge rules on the
+dialogue so far and its verdict ends the scenario. LangWatch Scenario ends this path with `succeed()` and skips the
+judge, which passes exactly the runs where the attacker won; here the judge's criteria decide either way. Set
+`success_score=None` to play every turn. Scores trail the dialogue by one reply, because the newest reply is scored
+when the next attack is written.
 
 ### GOAT
 
@@ -322,7 +322,8 @@ judge. A 30-turn run is around 60 helper calls. `score_responses=False` drops th
 feedback loop and early exit.
 
 `attacker.report()` returns a JSON-serialisable summary: strategy, target, plan, per-turn scores and hints, every
-attack with its phase and encoding, the backtracks and whether the early-exit condition was met. A red-team agent
+attack with its phase and encoding, the backtracks, whether the early-exit condition was met and the reply after
+which the early exit fired. A red-team agent
 keeps the state of its run, so build a new one for every scenario; reusing one raises `RuntimeError`.
 
 ## Running

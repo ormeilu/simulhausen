@@ -5,7 +5,8 @@ A callable step receives the :class:`~simulhausen.types.ScenarioState` and may
 be sync or async. Raising ``AssertionError`` in it fails the scenario; the
 runner records the failure and re-raises so pytest shows it as usual. A
 callable that returns ``succeed(...)`` or ``fail(...)`` ends the scenario the
-same way those steps do.
+same way those steps do; one that returns ``judge(...)`` ends the dialogue
+there and lets that verdict decide.
 """
 
 from __future__ import annotations

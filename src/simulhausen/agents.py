@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from agno.agent import Agent
 from agno.run.agent import RunOutput
@@ -16,7 +16,7 @@ from agno.scorer.judge import JudgeScorer
 from pydantic import BaseModel, Field
 
 from simulhausen import transcript_tools
-from simulhausen.config import require_model, resolve_parser_model
+from simulhausen.config import get_config, require_model, resolve_parser_model
 from simulhausen.exceptions import SimulationStructuredOutputError
 from simulhausen.prompts import (
     JUDGE_DECISION_PROMPT,
@@ -79,6 +79,11 @@ async def _arun_structured[T](agent: Agent, prompt: str, schema: type[T], *, sce
     )
 
 
+def _model_id(explicit: Model | None, default: Model | None) -> object:
+    """A model as it enters cache keys: by ``id``, since its repr carries client handles and addresses."""
+    return getattr(explicit or default, "id", None)
+
+
 def _numbered(criteria: Sequence[str]) -> str:
     return "\n".join(f"{index}. {criterion}" for index, criterion in enumerate(criteria, 1))
 
@@ -108,6 +113,7 @@ class UserSimulatorAgent:
     """
 
     role: AgentRole = AgentRole.USER
+    cacheable: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -121,6 +127,21 @@ class UserSimulatorAgent:
         self._parser_model = parser_model
         self.system_prompt = system_prompt
         self.persona = persona
+
+    def cache_fingerprint(self) -> dict[str, object]:
+        """The settings that shape this agent's answers; part of every cache key.
+
+        A subclass that adds such a setting extends this, or reruns with a
+        ``cache_key`` replay stale answers. One with hidden state (like the
+        red-team attacker) sets ``cacheable = False`` instead.
+        """
+        config = get_config()
+        return {
+            "model": _model_id(self._model, config.model),
+            "parser_model": _model_id(self._parser_model, config.parser_model),
+            "system_prompt": self.system_prompt,
+            "persona": self.persona,
+        }
 
     def instructions(self, state: ScenarioState) -> str:
         prompt = self.system_prompt or USER_SIMULATOR_PROMPT.format(description=state.description)
@@ -242,6 +263,7 @@ class JudgeAgent:
     """
 
     role: AgentRole = AgentRole.JUDGE
+    cacheable: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -266,6 +288,22 @@ class JudgeAgent:
         self.score_threshold = score_threshold
         self.token_threshold = token_threshold
         self.max_discovery_steps = max_discovery_steps
+
+    def cache_fingerprint(self) -> dict[str, object]:
+        """The settings that shape this judge's answers; part of every cache key.
+
+        The criteria are keyed per call (inline checkpoints differ from the
+        judge's own). A subclass that adds an answer-shaping setting extends this.
+        """
+        config = get_config()
+        return {
+            "model": _model_id(self._model, config.model),
+            "parser_model": _model_id(self._parser_model, config.parser_model),
+            "system_prompt": self.system_prompt,
+            "score_threshold": self.score_threshold,
+            "token_threshold": self.token_threshold,
+            "max_discovery_steps": self.max_discovery_steps,
+        }
 
     def _agent(self, instructions: str, schema: type[BaseModel], discovery: _Discovery | None = None) -> Agent:
         extra: dict[str, Any] = {}

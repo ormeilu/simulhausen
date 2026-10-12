@@ -277,6 +277,66 @@ failed scenarios out of all of them. On GitHub Actions:
 
 The report links the CI job when `CI_JOB_URL` (GitLab) or the `GITHUB_*` run variables are set.
 
+## Caching
+
+Model calls make a simulation slow and expensive, and no two runs say the same thing. With a cache key set,
+simulhausen stores the answers of the helper models on disk and replays them when the same call comes up again.
+A rerun calls a model only for what changed, and everything else comes out exactly as before.
+
+```python
+sim.configure(cache_key="refunds-v1")                   # every scenario
+result = await sim.run(..., cache_key="refunds-v1")     # one scenario; overrides configure()
+```
+
+Without a key nothing is cached. Two kinds of calls are cached:
+
+- The user simulator's and the judge's answers: each simulated message, verdict, continue/conclude decision and
+  numeric grade. The key covers the scenario name and description, the dialogue so far, the helper agent's class
+  and settings (`system_prompt`, `persona`, `score_threshold`, the model and the parser model by `id`) and, for
+  the judge, the criteria it is asked about and the `additional_context`. Change any of them and that call goes
+  to the model again.
+- Functions and methods you decorate with `@sim.cache()`, sync or async. Use it for slow work inside an adapter
+  or a script step, such as a retrieval call:
+
+  ```python
+  class SearchAdapter(sim.AgentAdapter):
+      async def call(self, input: sim.AgentInput) -> str:
+          docs = await self.search(input.last_new_user_message_str())
+          return await answer_with(docs, input.messages)
+
+      @sim.cache()
+      async def search(self, query: str) -> list[str]:
+          return await vector_store.search(query)
+  ```
+
+The agent under test is not cached by the runner, so a regression in it still shows. A recorded run replays
+only while the agent says the same things: once a reply differs, the transcript differs, and the helper calls
+from there on miss and go to the model.
+
+The key of a decorated function is the cache key, the scenario name and description, the function's module and
+qualified name, and every argument as the function receives it (positional, keyword and defaults alike). A
+first parameter named `self` or `cls` is left out, and so is anything listed in `@sim.cache(ignore=["client"])`.
+What `self` holds is not part of the key, so pass whatever should change the answer as an argument. Strings,
+numbers, lists, dicts, sets, dataclasses, `AgentInput` and `ScenarioState` are keyed by content. Any other
+object is keyed by its `repr`, and a `repr` with a memory address (`<Client object at 0x7f...>`) changes on every
+run, so such a call never hits. Pass plain data or `ignore` that argument.
+
+Entries are pickle files in `$SIMULHAUSEN_CACHE_DIR`, else `$XDG_CACHE_HOME/simulhausen`, else
+`~/.cache/simulhausen`, one file per entry, written to a temporary file and moved into place, so parallel
+workers can share the directory. An entry that cannot be read counts as a miss and is overwritten. A result that
+cannot be pickled, or a directory that cannot be written, logs a warning and the call goes on without caching.
+
+To start from scratch, change the key (`refunds-v2`) or call `sim.clear_cache()`, which deletes the entries and
+leaves other files in the directory alone. The wording of the built-in prompts is not part of the key, so change
+the key after an upgrade that touched them. Cached answers are for iterating on the agent, the script and the assertions;
+run once without a cache, or with a fresh key, for the run that counts.
+
+Loading a pickle runs code. Never point the cache directory at files you did not write, or at a directory that
+other users or untrusted pull requests can write to (a CI cache restored from a fork, for one).
+
+A `UserSimulatorAgent` or `JudgeAgent` subclass whose answers depend on state outside the key (an attack plan, a
+counter) sets the class attribute `cacheable = False` and is always called.
+
 ## Configuration
 
 ```python
@@ -285,6 +345,7 @@ sim.configure(
     parser_model=...,      # optional agno Model that turns their answers into the schema
     max_turns=10,          # ceiling for proceed() and unscripted runs
     min_turns=1,           # the judge may not end the dialogue earlier
+    cache_key=None,        # set to replay simulator, judge and @sim.cache() answers from disk
     verbose=True,          # log every message and verdict (logger "simulhausen")
     debug=False,           # ask for the user's messages on stdin
     user_name="User",      # labels in reports
@@ -292,7 +353,7 @@ sim.configure(
 )
 ```
 
-`run()` accepts `max_turns`, `min_turns`, `verbose` and `debug` per scenario. `UserSimulatorAgent` and
+`run()` accepts `max_turns`, `min_turns`, `verbose`, `debug` and `cache_key` per scenario. `UserSimulatorAgent` and
 `JudgeAgent` accept their own `model` and `parser_model`, plus `system_prompt` to replace the built-in prompt
 ([`simulhausen.prompts`](https://github.com/ormeilu/simulhausen/blob/main/src/simulhausen/prompts.py)). The simulator also takes a `persona`.
 
@@ -337,16 +398,19 @@ Ported: the script steps (`user`, `agent`, `message`, `proceed`, `judge` with in
 `additional_context`, `succeed`, `fail`), per-criterion `passed`/`failed`/`inconclusive` verdicts, the two-phase
 judge (an argument-free continue/conclude decision, then the verdict), `min_turns`, simulator `persona` and
 `system_prompt`, debug mode, `total_time`/`agent_time`, long-transcript discovery (a skeleton plus
-`expand_transcript` and `grep_transcript` once the dialogue passes `token_threshold`).
+`expand_transcript` and `grep_transcript` once the dialogue passes `token_threshold`), the response cache
+(`cache_key` and the `cache` decorator).
 
 Different: models are agno `Model` objects instead of litellm strings; the simulator reports `goal_achieved` so
 unscripted dialogues end without filler; harness failures and inconclusive scenarios are WARN and stay out of
 the pass rate; a script that ends without a judge verdict passes if its assertions passed; the judge also gets
 RAG references and tool executions; skeleton lines carry a short preview of each message; the discovery step
-limit is agno's soft `tool_call_limit` and not a final verdict call with the tools stripped.
+limit is agno's soft `tool_call_limit` and not a final verdict call with the tools stripped; the cache uses the
+standard library (one pickle file per entry, no joblib), puts keyword arguments, defaults and the function's
+identity into the key, and wraps the simulator and the judge at the runner's call sites.
 
 Not ported: anything that needs LangWatch (tracing, events, evaluators, remote traces), voice and realtime
-agents, the red-team agents and the joblib cache.
+agents and the red-team agents.
 
 ## Development
 

@@ -24,6 +24,7 @@ The API follows LangWatch Scenario (Apache-2.0); see NOTICE.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from simulhausen._cache import cache, clear_cache
 from simulhausen.adapters import agno_adapter, function_adapter
 from simulhausen.agents import JudgeAgent, JudgeVerdict, UserSimulatorAgent, UserTurn
 from simulhausen.config import SimulationConfig, configure, get_config
@@ -86,6 +87,8 @@ __all__ = [
     "__version__",
     "agent",
     "agno_adapter",
+    "cache",
+    "clear_cache",
     "collector",
     "configure",
     "fail",

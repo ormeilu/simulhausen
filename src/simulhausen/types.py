@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
 
 from pydantic import BaseModel, Field
 
@@ -27,6 +28,8 @@ __all__ = [
     "ScenarioResult",
     "ScenarioState",
     "ScenarioStatus",
+    "ToolCall",
+    "ToolCalls",
 ]
 
 type Role = Literal["user", "assistant"]
@@ -116,6 +119,87 @@ def _is_clean(tool: ToolExecution) -> bool:
     return bool(tool.tool_name) and not tool.tool_call_error and not tool.is_paused
 
 
+@dataclass(frozen=True)
+class ToolCall:
+    """One clean tool execution, as ``state.tool_calls()`` returns it.
+
+    ``turn`` is the 0-based agent turn the call belongs to (``None`` when the
+    execution was added to the state by hand). The empty call that
+    ``ToolCalls.first``/``.last`` return for a tool that never ran is falsy.
+    """
+
+    name: str
+    input: dict[str, Any] | None = None
+    output: str | None = None
+    turn: int | None = None
+    execution: ToolExecution | None = None
+
+    def __bool__(self) -> bool:
+        return self.execution is not None
+
+
+class ToolCalls(Sequence[ToolCall]):
+    """Clean calls of one tool (or of all tools) in call order.
+
+    A sequence with the picks ``first`` and ``last`` and the columns
+    ``inputs`` and ``outputs``, so assertions read naturally::
+
+        assert state.tool_calls("lookup_order").last.input == {"order_id": "1042"}
+    """
+
+    def __init__(self, calls: Sequence[ToolCall], name: str | None = None) -> None:
+        self._calls = list(calls)
+        self._name = name
+
+    @overload
+    def __getitem__(self, index: int) -> ToolCall: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[ToolCall]: ...
+
+    def __getitem__(self, index: int | slice) -> ToolCall | Sequence[ToolCall]:
+        return self._calls[index]
+
+    def __len__(self) -> int:
+        return len(self._calls)
+
+    def __iter__(self) -> Iterator[ToolCall]:
+        return iter(self._calls)
+
+    def __repr__(self) -> str:
+        return f"ToolCalls({self._calls!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, ToolCalls):
+            return self._calls == other._calls
+        if isinstance(other, list):
+            return self._calls == other
+        return NotImplemented
+
+    def _empty(self) -> ToolCall:
+        return ToolCall(name=self._name or "")
+
+    @property
+    def first(self) -> ToolCall:
+        """The first call; an empty, falsy call when the tool never ran."""
+        return self._calls[0] if self._calls else self._empty()
+
+    @property
+    def last(self) -> ToolCall:
+        """The last call; an empty, falsy call when the tool never ran."""
+        return self._calls[-1] if self._calls else self._empty()
+
+    @property
+    def inputs(self) -> list[dict[str, Any] | None]:
+        """The arguments of every call, in order."""
+        return [call.input for call in self._calls]
+
+    @property
+    def outputs(self) -> list[str | None]:
+        """The result of every call, in order."""
+        return [call.output for call in self._calls]
+
+
 @dataclass
 class ScenarioState:
     """Dialogue state: transcript, accumulated tool executions and references."""
@@ -126,8 +210,14 @@ class ScenarioState:
     messages: list[Message] = field(default_factory=list)
     tool_executions: list[ToolExecution] = field(default_factory=list)
     references: list[MessageReferences] = field(default_factory=list)
-    # Agent turns played so far.
+    # Agent turns played so far. A rollback does not lower it: rolled-back
+    # turns still count against max_turns.
     current_turn: int = 0
+    # id() of each tool execution / reference -> index of the agent message that
+    # brought it, so a rollback drops what the removed turns produced.
+    _origins: dict[int, int] = field(default_factory=dict, repr=False, compare=False)
+    # Transcript length when the agent last spoke; AgentInput.new_messages starts here.
+    _agent_seen: int = field(default=0, repr=False, compare=False)
 
     # -- mutation ---------------------------------------------------------
 
@@ -144,10 +234,38 @@ class ScenarioState:
         references: list[MessageReferences] | None = None,
     ) -> None:
         self.add_message("assistant", content)
+        index = len(self.messages) - 1
+        for item in [*(tools or []), *(references or [])]:
+            self._origins[id(item)] = index
         if tools:
             self.tool_executions.extend(tools)
         if references:
             self.references.extend(references)
+
+    def rollback_messages_to(self, index: int) -> list[Message]:
+        """Remove every message from ``index`` on and return the removed ones.
+
+        Tool executions and references brought by the removed agent messages
+        go too. ``index`` is clamped to the transcript length; a negative one
+        raises ``ValueError``. ``current_turn`` stays: rolled-back turns still
+        count against ``max_turns``. The runner only resends what is left, so
+        an agent forgets the removed exchange only if it rebuilds its context
+        from the transcript (``agno_adapter(..., history="transcript")``).
+        """
+        if index < 0:
+            raise ValueError(f"rollback index must be >= 0, got {index}")
+        index = min(index, len(self.messages))
+        removed = self.messages[index:]
+        del self.messages[index:]
+
+        def kept(item: object) -> bool:
+            return self._origins.get(id(item), -1) < index
+
+        self.tool_executions[:] = [tool for tool in self.tool_executions if kept(tool)]
+        self.references[:] = [ref for ref in self.references if kept(ref)]
+        self._origins = {key: origin for key, origin in self._origins.items() if origin < index}
+        self._agent_seen = min(self._agent_seen, index)
+        return removed
 
     # -- messages ---------------------------------------------------------
 
@@ -205,9 +323,29 @@ class ScenarioState:
         """
         return any(tool.tool_name == tool_name and _is_clean(tool) for tool in self.tool_executions)
 
-    def tool_calls(self, tool_name: str | None = None) -> list[ToolExecution]:
-        """Clean executions of ``tool_name`` (of every tool when ``None``), in call order."""
-        return [t for t in self.tool_executions if _is_clean(t) and (tool_name is None or t.tool_name == tool_name)]
+    def tool_calls(self, tool_name: str | None = None) -> ToolCalls:
+        """Clean calls of ``tool_name`` (of every tool when ``None``), in call order."""
+        return ToolCalls(
+            [
+                ToolCall(
+                    name=tool.tool_name or "",
+                    input=tool.tool_args,
+                    output=tool.result,
+                    turn=self._turn_of(tool),
+                    execution=tool,
+                )
+                for tool in self.tool_executions
+                if _is_clean(tool) and (tool_name is None or tool.tool_name == tool_name)
+            ],
+            name=tool_name,
+        )
+
+    def _turn_of(self, item: object) -> int | None:
+        """0-based agent turn that brought ``item``; ``None`` when it was added by hand."""
+        origin = self._origins.get(id(item))
+        if origin is None:
+            return None
+        return sum(1 for message in self.messages[:origin] if message["role"] == "assistant")
 
     def last_tool_call(self, tool_name: str | None = None) -> ToolExecution | None:
         """Most recent clean execution of ``tool_name`` (of any tool when ``None``)."""

@@ -320,3 +320,48 @@ async def test_function_adapter_with_an_async_function() -> None:
         return AgentTurn(content=agent_input.thread_id, tools=[tool])
 
     assert await sim.function_adapter(agent).call(_input()) == AgentTurn(content="t-1", tools=[tool])
+
+
+# -- history modes -----------------------------------------------------------------
+
+
+async def test_session_history_sends_the_last_user_message_in_the_thread() -> None:
+    target = FakeTarget(_ok())
+
+    await _turn(_adapter(target))
+
+    (args, kwargs) = target.calls[0]
+    assert args == ("tell me about my flights",)
+    assert kwargs["session_id"] == "t-1"
+
+
+async def test_transcript_history_replays_the_dialogue_in_a_fresh_session() -> None:
+    target = FakeTarget(_ok(), _ok())
+    adapter = _adapter(target, history="transcript", user_id="u-1")
+    agent_input = AgentInput(
+        thread_id="t-1",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "refund please"},
+        ],
+    )
+
+    await _turn(adapter, agent_input)
+    await _turn(adapter, agent_input)
+
+    (args, kwargs), (_, second_kwargs) = target.calls
+    sent = args[0]
+    assert [(m.role, m.content) for m in sent] == [
+        ("user", "hi"),
+        ("assistant", "hello"),
+        ("user", "refund please"),
+    ]
+    assert kwargs["session_id"].startswith("t-1-")
+    assert kwargs["session_id"] != second_kwargs["session_id"]
+    assert kwargs["user_id"] == "u-1"
+
+
+def test_unknown_history_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="history must be"):
+        sim.agno_adapter(cast(Agent, FakeTarget()), history=cast(Any, "memory"))

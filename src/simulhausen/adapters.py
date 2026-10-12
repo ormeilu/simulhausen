@@ -11,7 +11,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import TYPE_CHECKING, Any, Protocol, cast
+import uuid
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+
+from agno.models.message import Message as AgnoMessage
 
 from simulhausen.exceptions import SimulationBackendError
 from simulhausen.types import AgentAdapter, AgentInput, AgentReturnTypes, AgentTurn
@@ -45,6 +48,14 @@ class _Runnable(Protocol):
 
 
 type AgnoTarget = Agent | Team | Workflow | Callable[[], Agent | Team | Workflow]
+
+# How the agent under test gets the dialogue so far:
+# - "session": only the newest user message, with session_id = thread_id; agno's
+#   session history supplies the rest (the agent runs as in production).
+# - "transcript": the whole transcript as messages, in a fresh session each call;
+#   the agent only knows what the transcript says, so a rollback really erases
+#   the removed exchange (red-team backtracking needs this).
+type AgnoHistory = Literal["session", "transcript"]
 
 
 def _looks_like_error_page(text: str) -> bool:
@@ -115,7 +126,9 @@ class _AgnoAdapter(AgentAdapter):
         content_fn: Callable[[Any], str] | None,
         retries: int,
         retry_delay: float,
+        history: AgnoHistory,
     ) -> None:
+        self._history = history
         self._target = target
         self._resolved: _Runnable | None = None
         self._arun_kwargs = arun_kwargs
@@ -133,12 +146,18 @@ class _AgnoAdapter(AgentAdapter):
 
     async def call(self, input: AgentInput) -> AgentTurn:
         target = self._resolve()
-        message = input.last_new_user_message_str()
+        payload: str | list[AgnoMessage]
+        if self._history == "transcript":
+            payload = [AgnoMessage(role=m["role"], content=m["content"]) for m in input.messages]
+            session_id = f"{input.thread_id}-{uuid.uuid4().hex[:12]}"
+        else:
+            payload = input.last_new_user_message_str()
+            session_id = input.thread_id
         attempts = self._retries + 1
         reason: str | None = None
         response: Any = None
         for attempt in range(1, attempts + 1):
-            response = await target.arun(message, session_id=input.thread_id, **self._arun_kwargs)
+            response = await target.arun(payload, session_id=session_id, **self._arun_kwargs)
             reason = _backend_error_reason(response)
             if reason is None:
                 break
@@ -165,6 +184,7 @@ def agno_adapter(
     content_fn: Callable[[Any], str] | None = None,
     retries: int = DEFAULT_BACKEND_RETRIES,
     retry_delay: float = DEFAULT_BACKEND_RETRY_DELAY_S,
+    history: AgnoHistory = "session",
     **arun_kwargs: Any,
 ) -> AgentAdapter:
     """Adapter for an agno Agent, Team or Workflow.
@@ -179,6 +199,11 @@ def agno_adapter(
     with ``output_schema`` need it, since their content is a Pydantic model;
     otherwise the content goes through ``str(...)``.
 
+    ``history="transcript"`` sends the whole transcript as messages in a fresh
+    session on every call instead of relying on agno's session history. Use it
+    when the transcript can be rolled back (red-team backtracking) or must be
+    the only context the agent sees; earlier tool results are then not replayed.
+
     ``retries``/``retry_delay`` control how backend failures (RunStatus=error,
     a gateway HTML error page) are retried before ``SimulationBackendError``.
 
@@ -186,7 +211,11 @@ def agno_adapter(
     """
     if retries < 0:
         raise ValueError("retries must be >= 0")
-    return _AgnoAdapter(target, arun_kwargs, content_fn=content_fn, retries=retries, retry_delay=retry_delay)
+    if history not in ("session", "transcript"):
+        raise ValueError(f"history must be 'session' or 'transcript', got {history!r}")
+    return _AgnoAdapter(
+        target, arun_kwargs, content_fn=content_fn, retries=retries, retry_delay=retry_delay, history=history
+    )
 
 
 class _FunctionAdapter(AgentAdapter):

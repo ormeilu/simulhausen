@@ -33,6 +33,7 @@ from simulhausen.exceptions import (
     SimulationHarnessError,
     SimulationStructuredOutputError,
 )
+from simulhausen.red_team import CrescendoStrategy, GoatStrategy, RedTeamAgent, RedTeamStrategy
 from simulhausen.reporting import collector
 from simulhausen.runner import run
 from simulhausen.script import agent, fail, judge, message, proceed, succeed, user
@@ -66,12 +67,16 @@ __all__ = [
     "AgentReturnTypes",
     "AgentRole",
     "AgentTurn",
+    "CrescendoStrategy",
     "CriterionStatus",
     "CriterionVerdict",
+    "GoatStrategy",
     "JudgeAgent",
     "JudgeScore",
     "JudgeVerdict",
     "Message",
+    "RedTeamAgent",
+    "RedTeamStrategy",
     "Role",
     "ScenarioResult",
     "ScenarioState",

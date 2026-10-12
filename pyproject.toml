@@ -123,6 +123,7 @@ ignore = [
 "tests/**" = ["TC"]
 # Prompts are sent to the model verbatim; wrapping lines would change them.
 "src/simulhausen/prompts.py" = ["E501"]
+"src/simulhausen/red_team/prompts.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

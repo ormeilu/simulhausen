@@ -156,6 +156,29 @@ the WARN count is reported next to it. Harness errors are still raised, so a pla
 For an overall quality gate on top of the criteria, `JudgeAgent(criteria, score_threshold=7)` also grades the
 whole dialogue 1-10 with agno's `JudgeScorer`. Calibrate the threshold on known good and bad runs first.
 
+### Long dialogues
+
+A dialogue over `token_threshold` estimated tokens (UTF-8 bytes / 4, default 8192, roughly 32 KB of text) is not
+pasted into the judge's prompt. The judge gets a skeleton instead, one line per message with its index, speaker,
+size and a short preview, plus two tools: `expand_transcript(indices)` returns whole messages and
+`grep_transcript(pattern)` finds messages by text (plain text, case-insensitive, not a regex). The prompt tells it
+to read what a criterion depends on before ruling. What the tools return reaches the judge fenced as untrusted
+data, like the rest of the dialogue. The continue/conclude decision of unscripted runs works the same way. Below
+the threshold nothing changes.
+
+```python
+sim.JudgeAgent(criteria, token_threshold=16_000, max_discovery_steps=6)
+```
+
+`max_discovery_steps` (default 10) is passed to agno as `tool_call_limit` and caps the lookups per run. agno's
+limit is soft: it answers a call past the limit with an error result and asks the model again, so the verdict is
+whatever the model writes next. A decision that never came after the whole budget was spent concludes the
+dialogue, and the verdict follows. Each lookup is a model round trip, so a long dialogue costs up to
+`max_discovery_steps` extra calls per verdict and, in unscripted runs, per turn. Raise `token_threshold` to keep
+discovery off, or lower `max_discovery_steps` to cap the cost. References, tool executions and
+`additional_context` keep their caps and are not part of discovery, and `score_threshold` grading still reads
+the whole dialogue.
+
 ## Checking tools
 
 `agno_adapter` collects every `ToolExecution` of the run, including those of team members, so assertions work
@@ -313,15 +336,17 @@ call then replays the transcript as messages in a fresh session.
 Ported: the script steps (`user`, `agent`, `message`, `proceed`, `judge` with inline criteria and
 `additional_context`, `succeed`, `fail`), per-criterion `passed`/`failed`/`inconclusive` verdicts, the two-phase
 judge (an argument-free continue/conclude decision, then the verdict), `min_turns`, simulator `persona` and
-`system_prompt`, debug mode, `total_time`/`agent_time`.
+`system_prompt`, debug mode, `total_time`/`agent_time`, long-transcript discovery (a skeleton plus
+`expand_transcript` and `grep_transcript` once the dialogue passes `token_threshold`).
 
 Different: models are agno `Model` objects instead of litellm strings; the simulator reports `goal_achieved` so
 unscripted dialogues end without filler; harness failures and inconclusive scenarios are WARN and stay out of
 the pass rate; a script that ends without a judge verdict passes if its assertions passed; the judge also gets
-RAG references and tool executions.
+RAG references and tool executions; skeleton lines carry a short preview of each message; the discovery step
+limit is agno's soft `tool_call_limit` and not a final verdict call with the tools stripped.
 
 Not ported: anything that needs LangWatch (tracing, events, evaluators, remote traces), voice and realtime
-agents, the red-team agents, the joblib cache and long-transcript discovery tools.
+agents, the red-team agents and the joblib cache.
 
 ## Development
 

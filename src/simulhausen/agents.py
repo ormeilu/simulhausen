@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from agno.agent import Agent
 from agno.run.agent import RunOutput
 from agno.scorer.judge import JudgeScorer
 from pydantic import BaseModel, Field
 
+from simulhausen import transcript_tools
 from simulhausen.config import require_model, resolve_parser_model
 from simulhausen.exceptions import SimulationStructuredOutputError
 from simulhausen.prompts import (
@@ -22,16 +23,18 @@ from simulhausen.prompts import (
     JUDGE_VERDICT_PROMPT,
     PER_CRITERION_RULES,
     STRUCTURED_RETRY_NUDGE,
+    TRANSCRIPT_DISCOVERY_RULES,
+    TRANSCRIPT_SKELETON_INTRO,
     USER_SIMULATOR_PROMPT,
 )
 from simulhausen.types import AgentRole, CriterionVerdict, JudgeScore
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from agno.models.base import Model
 
-    from simulhausen.types import ScenarioState
+    from simulhausen.types import Message, ScenarioState
 
 __all__ = ["JudgeAgent", "JudgeVerdict", "UserSimulatorAgent", "UserTurn"]
 
@@ -177,6 +180,45 @@ class _TurnDecision(BaseModel):
     )
 
 
+class _Discovery:
+    """The two transcript lookups of one judge call, bound to the dialogue as it stands.
+
+    agno turns each public method into a tool: the name, the docstring and the
+    ``Args`` section are what the model sees. Results go back fenced as
+    untrusted data, since a transcript can carry injected instructions. ``calls``
+    counts the lookups that ran; agno refuses the ones past ``tool_call_limit``
+    before they get here.
+    """
+
+    def __init__(self, messages: Sequence[Message]) -> None:
+        self._messages = list(messages)
+        self.calls = 0
+
+    @property
+    def tools(self) -> list[Callable[..., str]]:
+        return [self.expand_transcript, self.grep_transcript]
+
+    def expand_transcript(self, indices: list[int]) -> str:
+        """Read whole messages of the dialogue. Use the index shown in brackets in the skeleton.
+
+        Ask for every message you need in one call.
+
+        Args:
+            indices: 0-based message indices to read in full.
+        """
+        self.calls += 1
+        return _fence("excerpt", transcript_tools.expand_transcript(self._messages, indices))
+
+    def grep_transcript(self, pattern: str) -> str:
+        """Find the messages of the dialogue that contain some text, with their full content.
+
+        Args:
+            pattern: Text to look for, matched case-insensitively as plain text. It is not a regular expression.
+        """
+        self.calls += 1
+        return _fence("excerpt", transcript_tools.grep_transcript(self._messages, pattern))
+
+
 class JudgeAgent:
     """LLM judge with per-criterion verdicts and an optional numeric grade.
 
@@ -190,6 +232,13 @@ class JudgeAgent:
 
     ``system_prompt`` replaces the built-in verdict prompt; the dialogue and the
     evidence are still sent as the message, fenced as untrusted data.
+
+    A dialogue over ``token_threshold`` estimated tokens (UTF-8 bytes / 4) is not
+    sent whole. The judge gets a skeleton of it (one line per message) and two
+    tools, ``expand_transcript`` and ``grep_transcript``, to read what it needs
+    before ruling, at most ``max_discovery_steps`` calls per run. This applies to
+    the verdict and to the continue/conclude decision. ``score_threshold``
+    grading is not affected: agno's scorer always reads the whole dialogue.
     """
 
     role: AgentRole = AgentRole.JUDGE
@@ -202,34 +251,67 @@ class JudgeAgent:
         parser_model: Model | None = None,
         system_prompt: str | None = None,
         score_threshold: int | None = None,
+        token_threshold: int = transcript_tools.DEFAULT_TOKEN_THRESHOLD,
+        max_discovery_steps: int = 10,
     ) -> None:
         if score_threshold is not None and not 1 <= score_threshold <= 10:
             raise ValueError("score_threshold must be between 1 and 10")
+        for name, value in (("token_threshold", token_threshold), ("max_discovery_steps", max_discovery_steps)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
         self.criteria = list(criteria)
         self._model = model
         self._parser_model = parser_model
         self.system_prompt = system_prompt
         self.score_threshold = score_threshold
+        self.token_threshold = token_threshold
+        self.max_discovery_steps = max_discovery_steps
 
-    def _agent(self, instructions: str, schema: type[BaseModel]) -> Agent:
+    def _agent(self, instructions: str, schema: type[BaseModel], discovery: _Discovery | None = None) -> Agent:
+        extra: dict[str, Any] = {}
+        if discovery is not None:
+            # agno's limit is soft: it answers calls past the limit with an error result and
+            # asks the model again, so the run ends when the model stops calling tools.
+            extra = {"tools": discovery.tools, "tool_call_limit": self.max_discovery_steps}
         return Agent(
             model=require_model(self._model),
             instructions=instructions,
             output_schema=schema,
             parser_model=resolve_parser_model(self._parser_model),
             telemetry=False,
+            **extra,
         )
 
+    def _discovery(self, state: ScenarioState) -> _Discovery | None:
+        """The lookups for a dialogue over ``token_threshold``; ``None`` while it fits."""
+        if transcript_tools.estimate_tokens(state.transcript()) <= self.token_threshold:
+            return None
+        return _Discovery(state.messages)
+
+    def _with_discovery_rules(self, instructions: str, discovery: _Discovery | None) -> str:
+        if discovery is None:
+            return instructions
+        return instructions.rstrip() + "\n\n" + TRANSCRIPT_DISCOVERY_RULES.format(max_steps=self.max_discovery_steps)
+
     @staticmethod
-    def evidence(state: ScenarioState, additional_context: str | None = None) -> str:
+    def evidence(state: ScenarioState, additional_context: str | None = None, *, skeleton: bool = False) -> str:
         """The dialogue plus what the agent saw and did, each fenced as untrusted data.
 
         The judge sees the same reference material (RAG) as the agent, so
         grounding criteria are checked against the real retrieval rather than
         a hand-written answer key. Tool executions let it tell facts that came
         from a tool apart from hallucinations.
+
+        With ``skeleton=True`` the dialogue is replaced by its skeleton (index,
+        speaker, size and a short preview per message), for a dialogue the judge
+        reads through ``expand_transcript`` and ``grep_transcript``. References
+        and tool executions keep their own caps either way.
         """
-        prompt = "Dialogue:\n" + _fence("transcript", state.transcript() or "(empty)")
+        if skeleton:
+            shown = transcript_tools.build_transcript_skeleton(state.messages)
+            prompt = TRANSCRIPT_SKELETON_INTRO + "\n" + _fence("transcript", shown)
+        else:
+            prompt = "Dialogue:\n" + _fence("transcript", state.transcript() or "(empty)")
         if references := state.references_text():
             prompt += "\n\nReference material the agent saw:\n" + _fence("references", references)
         if tool_evidence := state.tool_evidence_text():
@@ -258,9 +340,10 @@ class JudgeAgent:
             criteria=_numbered(criteria),
             per_criterion_rules=PER_CRITERION_RULES,
         )
+        discovery = self._discovery(state)
         judged = await _arun_structured(
-            self._agent(instructions, JudgeVerdict),
-            self.evidence(state, additional_context),
+            self._agent(self._with_discovery_rules(instructions, discovery), JudgeVerdict, discovery),
+            self.evidence(state, additional_context, skeleton=discovery is not None),
             JudgeVerdict,
             scenario=state.name,
             what="judge",
@@ -298,16 +381,29 @@ class JudgeAgent:
         ]
 
     async def decide(self, state: ScenarioState) -> bool:
-        """Unscripted runs: ``True`` when the dialogue holds enough for a verdict."""
+        """Unscripted runs: ``True`` when the dialogue holds enough for a verdict.
+
+        A long dialogue is read through the discovery tools here too. A decision
+        that never came after the judge spent its whole step budget concludes
+        the dialogue instead of continuing, as in LangWatch Scenario: the
+        verdict is then the next step, and the discovery would only start over
+        on every following turn.
+        """
         if not self.criteria:
             return False
-        agent = self._agent(
-            JUDGE_DECISION_PROMPT.format(description=state.description, criteria=_numbered(self.criteria)),
-            _TurnDecision,
-        )
-        response = await agent.arun(self.evidence(state))
+        discovery = self._discovery(state)
+        instructions = JUDGE_DECISION_PROMPT.format(description=state.description, criteria=_numbered(self.criteria))
+        agent = self._agent(self._with_discovery_rules(instructions, discovery), _TurnDecision, discovery)
+        response = await agent.arun(self.evidence(state, skeleton=discovery is not None))
         decision = response.content
         if not isinstance(decision, _TurnDecision):
+            if discovery is not None and discovery.calls >= self.max_discovery_steps:
+                logger.warning(
+                    "judge spent its %d discovery steps without a decision (scenario %r): concluding",
+                    self.max_discovery_steps,
+                    state.name,
+                )
+                return True
             # Unparsed decision: keep talking until max_turns, the final verdict decides.
             logger.warning("judge decision could not be parsed (scenario %r)", state.name)
             return False

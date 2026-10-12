@@ -17,6 +17,16 @@ Version 2.0:
     `_judge/criterion_verdicts.py`; some of the judge rules are close to
     verbatim. They were modified for agno structured output, the
     `goal_achieved` stop signal and fenced untrusted evidence.
+  - `src/simulhausen/transcript_tools.py` (the token estimate, the transcript
+    skeleton, `expand_transcript` and `grep_transcript`, their limits and
+    messages) is adapted from Scenario's `_judge/transcript_tools.py` and
+    `_judge/estimate_tokens.py`. The discovery rules and the skeleton
+    introduction in `src/simulhausen/prompts.py` are adapted from the
+    long-transcript handling in `judge_agent.py`. They were modified to work
+    on simulhausen's user/assistant messages, to show a preview per skeleton
+    line, to run as agno tools with fenced results and to read as plain-text
+    lookups.
 
-The implementation itself is independent and copies no other upstream code.
+Apart from the items above, the implementation is independent and copies no
+other upstream code.
 LangWatch Scenario ships no NOTICE file of its own.

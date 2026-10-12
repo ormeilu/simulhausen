@@ -10,7 +10,8 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from simulhausen.agents import JudgeAgent, UserSimulatorAgent, UserTurn
-from simulhausen.config import get_config
+from simulhausen.cache import cached_acall, caching_context, scenario_context
+from simulhausen.config import check_cache_key, get_config
 from simulhausen.exceptions import SimulationHarnessError
 from simulhausen.reporting import collector
 from simulhausen.script import (
@@ -26,14 +27,37 @@ from simulhausen.script import (
 from simulhausen.types import AgentAdapter, AgentInput, AgentTurn, ScenarioResult, ScenarioState
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
+    from simulhausen.agents import JudgeVerdict
     from simulhausen.script import ScriptStep, StateCallback
     from simulhausen.types import CriterionVerdict, JudgeScore
 
 __all__ = ["run"]
 
 logger = logging.getLogger(__name__)
+
+
+def _fingerprint(agent: UserSimulatorAgent | JudgeAgent) -> dict[str, object]:
+    """The settings of a helper agent that shape its answers: part of every cache key.
+
+    Models enter by ``id`` (a model object's repr carries client handles and addresses).
+    Whatever the call itself takes, such as the judge's effective criteria, is keyed
+    separately by the caller.
+    """
+    config = get_config()
+    model = agent._model or config.model
+    parser_model = agent._parser_model or config.parser_model
+    fingerprint: dict[str, object] = {
+        "model": getattr(model, "id", None),
+        "parser_model": getattr(parser_model, "id", None),
+        "system_prompt": agent.system_prompt,
+    }
+    if isinstance(agent, UserSimulatorAgent):
+        fingerprint["persona"] = agent.persona
+    else:
+        fingerprint["score_threshold"] = agent.score_threshold
+    return fingerprint
 
 
 async def _call(callback: StateCallback | None, state: ScenarioState) -> object:
@@ -107,15 +131,38 @@ class _Simulation:
         typed = await asyncio.to_thread(input, prompt)
         return typed.strip() or None
 
+    async def _helper_call[T](
+        self,
+        agent: UserSimulatorAgent | JudgeAgent,
+        method: str,
+        call: Callable[[], Awaitable[T]],
+        **arguments: object,
+    ) -> T:
+        """Run a call to a helper agent; with a cache key set, replay a stored answer instead.
+
+        The key covers the agent's class and settings, the call's own arguments and the
+        dialogue so far. Agents with ``cacheable = False`` (a stateful simulator, say) are
+        always called.
+        """
+        context = caching_context()
+        if context is None or not agent.cacheable:
+            return await call()
+        identity = f"{type(agent).__module__}.{type(agent).__qualname__}.{method}"
+        return await cached_acall(
+            context, identity, {"agent": _fingerprint(agent), "state": self.state, **arguments}, call
+        )
+
     async def _simulated_turn(self) -> UserTurn:
         if self.debug and (typed := await self._human_message()) is not None:
             return UserTurn(message=typed, goal_achieved=False)
-        return await self.simulator.next_turn(self.state)
+        return await self._helper_call(self.simulator, "next_turn", lambda: self.simulator.next_turn(self.state))
 
     async def user_turn(self, content: str | None) -> None:
         if content is None:
             typed = await self._human_message() if self.debug else None
-            content = typed or await self.simulator.next_message(self.state)
+            content = typed or await self._helper_call(
+                self.simulator, "next_message", lambda: self.simulator.next_message(self.state)
+            )
         self.state.add_user_message(content)
         self._log("user", content)
 
@@ -152,7 +199,7 @@ class _Simulation:
 
     async def checkpoint(self, criteria: Sequence[str], additional_context: str | None) -> None:
         """Inline criteria: fail right here if any fails, carry on otherwise."""
-        judged = await self._require_judge().judge(self.state, criteria, additional_context=additional_context)
+        judged = await self._judge_call(self._require_judge(), criteria, additional_context)
         self.checkpoint_verdicts.extend(judged.verdicts)
         self._log_verdicts(judged.verdicts)
         if not all(v.passed for v in judged.verdicts):
@@ -165,9 +212,27 @@ class _Simulation:
             raise ValueError(
                 f"scenario {self.state.name!r} has a final judge() step, but the JudgeAgent has no criteria"
             )
-        judged = await judge.judge(self.state, additional_context=additional_context)
+        judged = await self._judge_call(judge, None, additional_context)
         self._record_final(judged.verdicts, judged.summary)
-        self.judge_score = await judge.score(self.state)
+        self.judge_score = await self._score(judge)
+
+    async def _judge_call(
+        self, judge: JudgeAgent, criteria: Sequence[str] | None, additional_context: str | None
+    ) -> JudgeVerdict:
+        """``judge.judge`` keyed by the criteria it will really apply (its own when ``None``)."""
+        return await self._helper_call(
+            judge,
+            "judge",
+            lambda: judge.judge(self.state, criteria, additional_context=additional_context),
+            criteria=list(judge.criteria if criteria is None else criteria),
+            additional_context=additional_context,
+        )
+
+    async def _decide(self, judge: JudgeAgent) -> bool:
+        return await self._helper_call(judge, "decide", lambda: judge.decide(self.state), criteria=judge.criteria)
+
+    async def _score(self, judge: JudgeAgent) -> JudgeScore | None:
+        return await self._helper_call(judge, "score", lambda: judge.score(self.state), criteria=judge.criteria)
 
     def _record_final(self, verdicts: list[CriterionVerdict], summary: str) -> None:
         self.final_verdicts = list(verdicts)
@@ -206,15 +271,15 @@ class _Simulation:
         judge = self.judge
         if judge is None or not judge.criteria or self.state.current_turn < self.min_turns:
             return False
-        if not await judge.decide(self.state):
+        if not await self._decide(judge):
             return False
-        judged = await judge.judge(self.state)
+        judged = await self._judge_call(judge, None, None)
         last_turn = self.state.current_turn >= self.max_turns
         if any(v.inconclusive for v in judged.verdicts) and not last_turn:
             self._log("judge", "concluded with inconclusive criteria, continuing the dialogue")
             return False
         self._record_final(judged.verdicts, judged.summary)
-        self.judge_score = await judge.score(self.state)
+        self.judge_score = await self._score(judge)
         return True
 
     # -- whole script -----------------------------------------------------
@@ -316,6 +381,7 @@ async def run(
     min_turns: int | None = None,
     verbose: bool | None = None,
     debug: bool | None = None,
+    cache_key: str | None = None,
 ) -> ScenarioResult:
     """Play one scenario and return its result; every result also lands in the report collector.
 
@@ -329,10 +395,17 @@ async def run(
     :class:`SimulationHarnessError` (no structured output from the judge or the
     simulator, a backend failure) is recorded and re-raised as well, but marks
     the result ``harness_error=True``, which reports show as WARN, not FAIL.
+
+    ``cache_key`` (default: the one from :func:`configure`) turns on the response
+    cache for this run: the simulator's and the judge's answers, and every function
+    decorated with :func:`simulhausen.cache`, are replayed from disk when the same
+    call was seen before. Change the key to start from scratch.
     """
     for label, value in (("max_turns", max_turns), ("min_turns", min_turns)):
         if value is not None and value < 1:
             raise ValueError(f"{label} must be at least 1, got {value}")
+    if cache_key is not None:
+        check_cache_key(cache_key)
     config = get_config()
     simulation = _Simulation(
         name=name,
@@ -351,7 +424,8 @@ async def run(
         return result
 
     try:
-        await simulation.run_script(script if script is not None else [proceed()])
+        with scenario_context(name, description, config.cache_key if cache_key is None else cache_key):
+            await simulation.run_script(script if script is not None else [proceed()])
     except AssertionError as exc:
         finish(failure_reason=f"assertion in script: {exc}")
         raise

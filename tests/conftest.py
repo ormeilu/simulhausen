@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from dataclasses import fields
+from pathlib import Path
 
 import pytest
 
@@ -24,3 +25,11 @@ def _isolated_globals() -> Iterator[None]:
     _reset_globals()
     yield
     _reset_globals()
+
+
+@pytest.fixture(autouse=True)
+def cache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Every test gets its own response-cache directory, so none of them can touch the real one."""
+    path = tmp_path / "response-cache"
+    monkeypatch.setenv("SIMULHAUSEN_CACHE_DIR", str(path))
+    return path

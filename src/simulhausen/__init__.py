@@ -26,6 +26,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from simulhausen.adapters import agno_adapter, function_adapter
 from simulhausen.agents import JudgeAgent, JudgeVerdict, UserSimulatorAgent, UserTurn
+from simulhausen.cache import cache, clear_cache
 from simulhausen.config import SimulationConfig, configure, get_config
 from simulhausen.exceptions import (
     SimulationBackendError,
@@ -86,6 +87,8 @@ __all__ = [
     "__version__",
     "agent",
     "agno_adapter",
+    "cache",
+    "clear_cache",
     "collector",
     "configure",
     "fail",

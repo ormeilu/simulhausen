@@ -26,6 +26,10 @@ Version 2.0:
     on simulhausen's user/assistant messages, to show a preview per skeleton
     line, to run as agno tools with fenced results and to read as plain-text
     lookups.
+  - The response cache API (`cache` decorator with `ignore`, `cache_key` in
+    `configure` and `run`, caching of the user simulator's and the judge's
+    answers) follows Scenario's `cache.py`. The implementation uses the
+    standard library instead of joblib and wrapt.
 
 Apart from the items above, the implementation is independent and copies no
 other upstream code.

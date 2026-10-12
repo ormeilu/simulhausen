@@ -20,6 +20,7 @@ def test_defaults() -> None:
     assert (config.max_turns, config.min_turns) == (10, 1)
     assert (config.verbose, config.debug) == (True, False)
     assert (config.agent_name, config.user_name) == ("Agent", "User")
+    assert config.cache_key is None
 
 
 def test_get_config_returns_the_live_object() -> None:
@@ -31,7 +32,7 @@ def test_get_config_returns_the_live_object() -> None:
 def test_configure_updates_only_the_given_fields() -> None:
     model, parser = _model(), _model()
     configure(model=model, max_turns=4, user_name="Customer")
-    configure(parser_model=parser, verbose=False, debug=True, min_turns=2, agent_name="Ellie")
+    configure(parser_model=parser, verbose=False, debug=True, min_turns=2, agent_name="Ellie", cache_key="suite-v1")
 
     assert get_config() == SimulationConfig(
         model=model,
@@ -42,6 +43,7 @@ def test_configure_updates_only_the_given_fields() -> None:
         debug=True,
         agent_name="Ellie",
         user_name="Customer",
+        cache_key="suite-v1",
     )
 
 
@@ -64,6 +66,26 @@ def test_configure_rejects_turn_limits_below_one(field: str, call: Callable[[int
     with pytest.raises(ValueError, match=f"{field} must be at least 1"):
         call(value)
     assert getattr(get_config(), field) == getattr(SimulationConfig(), field)
+
+
+def test_configure_keeps_the_cache_key_when_it_is_not_passed() -> None:
+    configure(cache_key="suite-v1")
+    configure(max_turns=3)
+
+    assert get_config().cache_key == "suite-v1"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n"])
+def test_configure_rejects_a_blank_cache_key(value: str) -> None:
+    with pytest.raises(ValueError, match="cache_key must be a non-empty string"):
+        configure(cache_key=value)
+    assert get_config().cache_key is None
+
+
+def test_configure_rejects_a_cache_key_that_is_not_a_string() -> None:
+    with pytest.raises(ValueError, match="cache_key must be a non-empty string"):
+        configure(cache_key=cast("str", 42))
+    assert get_config().cache_key is None
 
 
 def test_require_model_prefers_the_explicit_model() -> None:

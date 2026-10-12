@@ -1,10 +1,13 @@
 import asyncio
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from agno.models.base import Model
 from agno.models.message import MessageReferences
 from agno.models.response import ToolExecution
 
@@ -25,6 +28,7 @@ from simulhausen import (
     UserTurn,
     collector,
 )
+from simulhausen.cache import ScenarioContext, current_context
 from simulhausen.script import ScriptStep
 
 type Round = CriterionStatus | list[CriterionStatus]
@@ -33,8 +37,8 @@ type Round = CriterionStatus | list[CriterionStatus]
 class ScriptedUser(UserSimulatorAgent):
     """Replays the given turns (plain strings are ordinary messages), then invents "user message N"."""
 
-    def __init__(self, *turns: UserTurn | str) -> None:
-        super().__init__()
+    def __init__(self, *turns: UserTurn | str, **options: Any) -> None:
+        super().__init__(**options)
         self.turns = [UserTurn(message=t, goal_achieved=False) if isinstance(t, str) else t for t in turns]
         self.transcript_sizes: list[int] = []
 
@@ -83,8 +87,9 @@ class FakeJudge(JudgeAgent):
         decisions: Sequence[bool] = (False,),
         grades: Sequence[JudgeScore | None] = (None,),
         summary: str = "judge summary",
+        **options: Any,
     ) -> None:
-        super().__init__(criteria)
+        super().__init__(criteria, **options)
         self.rounds = list(rounds)
         self.decisions = list(decisions)
         self.grades = list(grades)
@@ -1105,3 +1110,325 @@ async def test_new_messages_after_a_rollback_hold_only_the_remaining_tail() -> N
     last_input = adapter.inputs[-1]
     assert [m["content"] for m in last_input.messages] == ["one", "agent reply 1", "two again"]
     assert [m["content"] for m in last_input.new_messages] == ["two again"]
+
+
+# -- response cache ------------------------------------------------------------------------------
+
+KEY = "suite-v1"
+GRADE = JudgeScore(value=1.0, raw_score=10, threshold=7, passed=True, reasoning="solid")
+
+
+def _model(model_id: str) -> Model:
+    return cast("Model", SimpleNamespace(id=model_id))
+
+
+def _outcome(result: ScenarioResult) -> ScenarioResult:
+    """The result without wall-clock times, which differ between a recorded run and a replay."""
+    return replace(result, total_time=0.0, agent_time=0.0)
+
+
+def _entry_count(directory: Path) -> int:
+    return len(list(directory.glob("*.pkl")))
+
+
+def _nothing_written(directory: Path) -> bool:
+    return not directory.exists()
+
+
+async def _cached_play(
+    user: ScriptedUser | None = None,
+    judge: FakeJudge | None = None,
+    *,
+    script: Sequence[ScriptStep] | None = None,
+    max_turns: int = 3,
+    **kwargs: Any,
+) -> tuple[ScenarioResult, ScriptedUser, FakeJudge, ReplyAdapter]:
+    """One run with fresh fakes: a user, a judge that concludes on its second look, an agent."""
+    user = user or ScriptedUser()
+    judge = judge or FakeJudge(decisions=[False, True], grades=[GRADE])
+    adapter = ReplyAdapter()
+    result = await play(adapter, user, judge, script=script, max_turns=max_turns, **kwargs)
+    return result, user, judge, adapter
+
+
+def _helper_calls(user: ScriptedUser, judge: FakeJudge) -> tuple[int, int, int, int]:
+    """How often the simulator, the judge's verdict, its decision and its grade were asked for."""
+    return len(user.transcript_sizes), len(judge.judge_calls), len(judge.decide_sizes), judge.score_calls
+
+
+async def test_without_a_cache_key_the_helper_agents_are_called_every_time(cache_dir: Path) -> None:
+    await _cached_play()
+    _, user, judge, _ = await _cached_play()
+
+    assert _helper_calls(user, judge) == (2, 1, 2, 1)
+    assert _nothing_written(cache_dir)
+
+
+async def test_a_rerun_replays_the_simulator_and_the_judge_from_the_cache(cache_dir: Path) -> None:
+    sim.configure(cache_key=KEY)
+    first, user, judge, _ = await _cached_play()
+    second, replayed_user, replayed_judge, adapter = await _cached_play()
+
+    assert first.success
+    assert first.judge_score == GRADE
+    assert _helper_calls(user, judge) == (2, 1, 2, 1)
+    assert _helper_calls(replayed_user, replayed_judge) == (0, 0, 0, 0)
+    assert _outcome(second) == _outcome(first)
+    assert len(adapter.inputs) == 2  # the agent under test always runs
+    assert _entry_count(cache_dir) == 2 + 2 + 1 + 1  # user turns, decisions, verdict, grade
+
+
+async def test_a_scripted_run_replays_user_messages_checkpoints_and_the_final_verdict() -> None:
+    sim.configure(cache_key=KEY)
+    script = [
+        sim.user(),
+        sim.agent(),
+        sim.judge(criteria=["greets the user"], additional_context="a database row"),
+        sim.user(),
+        sim.agent(),
+        sim.judge(),
+    ]
+    first, _, judge, _ = await _cached_play(script=script)
+    second, replayed_user, replayed_judge, _ = await _cached_play(script=script)
+
+    assert len(judge.judge_calls) == 2
+    assert _helper_calls(replayed_user, replayed_judge) == (0, 0, 0, 0)
+    assert _outcome(second) == _outcome(first)
+    assert [v.criterion for v in second.verdicts] == ["greets the user", "is polite"]
+
+
+async def test_run_level_cache_key_overrides_the_configured_one() -> None:
+    sim.configure(cache_key="global")
+    await _cached_play(cache_key="local")
+    _, user, judge, _ = await _cached_play(cache_key="local")
+    assert _helper_calls(user, judge) == (0, 0, 0, 0)
+
+    _, user, judge, _ = await _cached_play()  # the configured key: its own, still empty, set of entries
+    assert _helper_calls(user, judge) == (2, 1, 2, 1)
+    _, user, judge, _ = await _cached_play()
+    assert _helper_calls(user, judge) == (0, 0, 0, 0)
+
+
+async def test_a_run_level_cache_key_works_without_a_configured_one() -> None:
+    await _cached_play(cache_key=KEY)
+    _, user, judge, _ = await _cached_play(cache_key=KEY)
+
+    assert _helper_calls(user, judge) == (0, 0, 0, 0)
+
+
+async def test_a_blank_run_level_cache_key_is_rejected_before_anything_runs() -> None:
+    adapter = ReplyAdapter()
+
+    with pytest.raises(ValueError, match="cache_key must be a non-empty string"):
+        await play(adapter, cache_key=" ")
+
+    assert adapter.inputs == []
+    assert collector.records == []
+
+
+async def test_changing_the_cache_key_starts_from_scratch() -> None:
+    await _cached_play(cache_key="suite-v1")
+    _, user, judge, _ = await _cached_play(cache_key="suite-v2")
+
+    assert _helper_calls(user, judge) == (2, 1, 2, 1)
+
+
+@dataclass
+class Variant:
+    """What changes between the recorded run and the replay, and which helper has to be asked again."""
+
+    user: dict[str, Any] = field(default_factory=dict)
+    judge: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    simulator_called: bool = False
+    judge_called: bool = False
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        Variant(),
+        Variant(judge={"criteria": ["is brief"]}, judge_called=True),
+        Variant(judge={"system_prompt": "Be strict."}, judge_called=True),
+        Variant(judge={"score_threshold": 7}, judge_called=True),
+        Variant(judge={"model": _model("judge-model")}, judge_called=True),
+        Variant(user={"persona": "impatient"}, simulator_called=True),
+        Variant(user={"system_prompt": "You are the user."}, simulator_called=True),
+        Variant(user={"model": _model("user-model")}, simulator_called=True),
+        Variant(config={"model": _model("shared-model")}, simulator_called=True, judge_called=True),
+        Variant(config={"parser_model": _model("parser-model")}, simulator_called=True, judge_called=True),
+    ],
+    ids=[
+        "unchanged",
+        "judge criteria",
+        "judge system prompt",
+        "judge score threshold",
+        "judge model",
+        "persona",
+        "user system prompt",
+        "user model",
+        "configured model",
+        "configured parser model",
+    ],
+)
+async def test_what_changes_a_helper_agents_answers_changes_its_key(variant: Variant) -> None:
+    sim.configure(cache_key=KEY)
+    first, *_ = await _cached_play()
+
+    sim.configure(**variant.config)
+    second, user, judge, _ = await _cached_play(
+        ScriptedUser(**variant.user), FakeJudge(decisions=[False, True], grades=[GRADE], **variant.judge)
+    )
+
+    asked = (len(user.transcript_sizes) > 0, len(judge.judge_calls) > 0)
+    assert asked == (variant.simulator_called, variant.judge_called)
+    if not variant.judge:  # a different judge may well reach a different verdict
+        assert _outcome(second) == _outcome(first)
+
+
+async def test_the_model_enters_the_key_by_id_not_by_identity() -> None:
+    sim.configure(cache_key=KEY, model=_model("gpt-a"))
+    await _cached_play()
+
+    sim.configure(model=_model("gpt-b"))
+    _, user, judge, _ = await _cached_play()
+    assert _helper_calls(user, judge) == (2, 1, 2, 1)
+
+    sim.configure(model=_model("gpt-a"))  # a new object with the first id
+    _, user, judge, _ = await _cached_play()
+    assert _helper_calls(user, judge) == (0, 0, 0, 0)
+
+
+async def test_checkpoint_criteria_and_additional_context_enter_the_key() -> None:
+    sim.configure(cache_key=KEY)
+
+    def script(criteria: str, context: str) -> list[ScriptStep]:
+        return [sim.user("hi"), sim.agent(), sim.judge(criteria=[criteria], additional_context=context)]
+
+    await _cached_play(script=script("greets", "row A"))
+    _, _, same, _ = await _cached_play(script=script("greets", "row A"))
+    _, _, other_criteria, _ = await _cached_play(script=script("apologises", "row A"))
+    _, _, other_context, _ = await _cached_play(script=script("greets", "row B"))
+
+    assert [len(j.judge_calls) for j in (same, other_criteria, other_context)] == [0, 1, 1]
+
+
+async def test_a_simulator_that_is_not_cacheable_is_always_called() -> None:
+    class StatefulUser(ScriptedUser):
+        cacheable = False
+
+    sim.configure(cache_key=KEY)
+    await _cached_play(StatefulUser())
+    _, user, judge, _ = await _cached_play(StatefulUser())
+
+    assert len(user.transcript_sizes) == 2
+    assert (len(judge.judge_calls), judge.score_calls) == (0, 0)  # the judge still replays
+
+
+async def test_a_judge_that_is_not_cacheable_is_always_called() -> None:
+    class StatefulJudge(FakeJudge):
+        cacheable = False
+
+    sim.configure(cache_key=KEY)
+    await _cached_play(judge=StatefulJudge(decisions=[False, True], grades=[GRADE]))
+    _, user, judge, _ = await _cached_play(judge=StatefulJudge(decisions=[False, True], grades=[GRADE]))
+
+    assert _helper_calls(user, judge) == (0, 1, 2, 1)  # the simulator still replays
+
+
+async def test_decorated_functions_in_an_adapter_are_cached_per_scenario() -> None:
+    class SearchAdapter(AgentAdapter):
+        def __init__(self) -> None:
+            self.searches: list[str] = []
+
+        async def call(self, input: AgentInput) -> str:
+            return await self.search(input.last_new_user_message_str())
+
+        @sim.cache()
+        async def search(self, query: str) -> str:
+            self.searches.append(query)
+            return f"found {query}"
+
+    script: list[ScriptStep] = [sim.user("refund"), sim.agent()]
+    first, second, renamed, unkeyed = SearchAdapter(), SearchAdapter(), SearchAdapter(), SearchAdapter()
+
+    result = await sim.run("search", "A user searches.", [first], script, cache_key=KEY)
+    await sim.run("search", "A user searches.", [second], script, cache_key=KEY)
+    await sim.run("another scenario", "A user searches.", [renamed], script, cache_key=KEY)
+    await sim.run("search", "A user searches.", [unkeyed], script)
+
+    assert result.messages[-1]["content"] == "found refund"
+    assert (first.searches, second.searches, renamed.searches, unkeyed.searches) == (
+        ["refund"],
+        [],
+        ["refund"],
+        ["refund"],
+    )
+
+
+async def test_concurrent_runs_keep_their_own_cache_settings() -> None:
+    async def both() -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+        cached, uncached = await asyncio.gather(_cached_play(cache_key=KEY), _cached_play())
+        return _helper_calls(cached[1], cached[2]), _helper_calls(uncached[1], uncached[2])
+
+    assert await both() == ((2, 1, 2, 1), (2, 1, 2, 1))
+    assert await both() == ((0, 0, 0, 0), (2, 1, 2, 1))
+
+
+# -- the scenario context during and after a run --------------------------------------------
+
+
+async def test_the_scenario_context_is_set_during_the_run_and_gone_after_it() -> None:
+    seen: list[ScenarioContext | None] = []
+    assert current_context() is None
+
+    def record(state: ScenarioState) -> None:
+        seen.append(current_context())
+
+    await sim.run("refund", "wants money back", [ReplyAdapter()], [record], cache_key=KEY)
+
+    assert seen == [ScenarioContext(name="refund", description="wants money back", cache_key=KEY)]
+    assert current_context() is None
+
+
+async def test_the_context_carries_the_configured_key_and_none_without_one() -> None:
+    seen: list[ScenarioContext | None] = []
+
+    def record(state: ScenarioState) -> None:
+        seen.append(current_context())
+
+    await play(ReplyAdapter(), script=[record])
+    sim.configure(cache_key="configured")
+    await play(ReplyAdapter(), script=[record])
+    await play(ReplyAdapter(), script=[record], cache_key="explicit")
+
+    assert [c.cache_key for c in seen if c] == [None, "configured", "explicit"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [AssertionError("assertion in the script"), sim.SimulationHarnessError("the judge broke"), RuntimeError("boom")],
+    ids=["assertion", "harness", "runtime"],
+)
+async def test_the_scenario_context_is_reset_after_a_failed_run(error: Exception) -> None:
+    def boom(state: ScenarioState) -> None:
+        raise error
+
+    with pytest.raises(type(error)):
+        await play(ReplyAdapter(), script=[boom], cache_key=KEY)
+
+    assert current_context() is None
+
+
+async def test_a_nested_run_restores_the_outer_context() -> None:
+    seen: list[ScenarioContext | None] = []
+
+    async def inner_run(state: ScenarioState) -> None:
+        seen.append(current_context())
+        await sim.run("inner", "inner description", [ReplyAdapter()], [sim.user("hi"), sim.agent()], cache_key="inner")
+        seen.append(current_context())
+
+    await sim.run("outer", "outer description", [ReplyAdapter()], [inner_run], cache_key="outer")
+
+    assert [(c.name, c.cache_key) for c in seen if c] == [("outer", "outer"), ("outer", "outer")]
+    assert current_context() is None

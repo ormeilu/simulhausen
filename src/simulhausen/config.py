@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 __all__ = ["SimulationConfig", "configure", "get_config"]
 
 
+def check_cache_key(value: str) -> str:
+    """Return ``value`` when it can serve as a cache key (a non-blank string), else raise ``ValueError``."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"cache_key must be a non-empty string, got {value!r}")
+    return value
+
+
 @dataclass
 class SimulationConfig:
     """Defaults shared by every scenario in the process."""
@@ -46,6 +53,10 @@ class SimulationConfig:
     agent_name: str = "Agent"
     # Label of the simulated user in reports and transcripts.
     user_name: str = "User"
+    # Response cache: with a key set, the simulator's and the judge's answers and every
+    # function decorated with simulhausen.cache() are replayed from disk on a re-run.
+    # Change the key to start from scratch. None turns caching off.
+    cache_key: str | None = None
 
 
 _config = SimulationConfig()
@@ -61,6 +72,7 @@ def configure(
     debug: bool | None = None,
     agent_name: str | None = None,
     user_name: str | None = None,
+    cache_key: str | None = None,
 ) -> None:
     """Set simulation defaults; call once, e.g. from a session-scoped fixture.
 
@@ -86,6 +98,8 @@ def configure(
         _config.agent_name = agent_name
     if user_name is not None:
         _config.user_name = user_name
+    if cache_key is not None:
+        _config.cache_key = check_cache_key(cache_key)
 
 
 def get_config() -> SimulationConfig:

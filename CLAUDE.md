@@ -18,7 +18,8 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
 - Tests never call a model. Fake the helper agents by subclassing `UserSimulatorAgent` / `JudgeAgent`, or
   monkeypatch `simulhausen.agents.Agent` with a stub whose `arun` returns `SimpleNamespace(content=...)`.
 - `simulhausen.collector` and the `configure()` dataclass are process globals; the autouse fixture in
-  `tests/conftest.py` resets both around each test.
+  `tests/conftest.py` resets both around each test. Its autouse `cache_dir` fixture points the response cache at a
+  per-test temporary directory, so no test touches `~/.cache/simulhausen`.
 - `addopts` carries `-p no:simulhausen` on purpose: the entry-point plugin would import the package before
   coverage starts. Plugin behaviour is tested through `pytester.runpytest_subprocess`, where the entry point loads
   normally.
@@ -36,6 +37,12 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
   behaviour change: commit it as `feat:` or `fix:` so it reaches the changelog.
 - Untrusted data (transcript, RAG references, tool results, additional context) reaches the judge only through
   `_fence()` in `agents.py`.
+- The response cache (`cache.py`) wraps the helper agents at the runner's call sites (`_helper_call`), keyed by
+  `_fingerprint()` plus the call's arguments and the state. A new `UserSimulatorAgent` / `JudgeAgent` option that
+  changes what the model is asked or answers goes into `_fingerprint()` (or into the call's arguments), or reruns
+  replay stale answers. A subclass with hidden state sets `cacheable = False`. The package attribute
+  `simulhausen.cache` is the decorator and shadows the submodule, so write `from simulhausen.cache import ...`
+  (not `import simulhausen.cache as m` or a dotted `monkeypatch.setattr` target).
 
 ## Licensing
 

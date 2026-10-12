@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from agno.agent import Agent
 from agno.run.agent import RunOutput
@@ -108,6 +108,7 @@ class UserSimulatorAgent:
     """
 
     role: AgentRole = AgentRole.USER
+    cacheable: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -242,6 +243,7 @@ class JudgeAgent:
     """
 
     role: AgentRole = AgentRole.JUDGE
+    cacheable: ClassVar[bool] = True
 
     def __init__(
         self,

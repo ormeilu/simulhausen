@@ -19,3 +19,6 @@ htmlcov/
 
 # Simulation reports
 reports/
+
+# Agent worktrees
+.worktrees/

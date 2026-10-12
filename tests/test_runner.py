@@ -1044,3 +1044,64 @@ async def test_verbose_proceed_logs_goal_achieved_and_ignored_conclusions(caplog
 
     assert "[scenario] user: (goal achieved)" in caplog.messages
     assert "[scenario] judge: concluded with inconclusive criteria, continuing the dialogue" in caplog.messages
+
+
+# -- callables that end the scenario, rollback ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ending", "status", "reasoning"),
+    [
+        (sim.succeed("objective reached"), ScenarioStatus.PASS, "objective reached"),
+        (sim.fail("leak"), ScenarioStatus.FAIL, "leak"),
+    ],
+    ids=["succeed", "fail"],
+)
+async def test_callable_returning_an_ending_step_ends_the_scenario(
+    ending: object, status: ScenarioStatus, reasoning: str
+) -> None:
+    adapter = ReplyAdapter()
+
+    async def early_exit(state: ScenarioState) -> object:
+        return ending if state.current_turn >= 1 else None
+
+    result = await play(
+        adapter,
+        FakeJudge(["never judged"]),
+        script=[sim.user("one"), sim.agent(), early_exit, sim.user("two"), sim.agent()],
+    )
+
+    assert result.status is status
+    assert result.reasoning == reasoning
+    assert len(adapter.inputs) == 1
+    assert result.verdicts == []
+
+
+async def test_callable_returning_other_values_is_ignored() -> None:
+    result = await play(ReplyAdapter(), script=[sim.user("one"), sim.agent(), lambda state: "not a step"])
+
+    assert result.status is ScenarioStatus.PASS
+
+
+async def test_new_messages_after_a_rollback_hold_only_the_remaining_tail() -> None:
+    adapter = ReplyAdapter()
+
+    def backtrack(state: ScenarioState) -> None:
+        state.rollback_messages_to(2)
+
+    await play(
+        adapter,
+        script=[
+            sim.user("one"),
+            sim.agent(),
+            sim.user("two"),
+            sim.agent(),
+            backtrack,
+            sim.user("two again"),
+            sim.agent(),
+        ],
+    )
+
+    last_input = adapter.inputs[-1]
+    assert [m["content"] for m in last_input.messages] == ["one", "agent reply 1", "two again"]
+    assert [m["content"] for m in last_input.new_messages] == ["two again"]

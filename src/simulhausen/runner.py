@@ -36,12 +36,13 @@ __all__ = ["run"]
 logger = logging.getLogger(__name__)
 
 
-async def _call(callback: StateCallback | None, state: ScenarioState) -> None:
+async def _call(callback: StateCallback | None, state: ScenarioState) -> object:
     if callback is None:
-        return
+        return None
     outcome = callback(state)
     if inspect.isawaitable(outcome):
-        await outcome
+        return await outcome
+    return outcome
 
 
 class _Simulation:
@@ -83,8 +84,6 @@ class _Simulation:
         # Transcript length at the last final verdict; None until there is one.
         self.final_judged_at: int | None = None
         self.agent_time = 0.0
-        # Length of the transcript the last time the agent spoke (for new_messages).
-        self._seen = 0
 
     @property
     def ended(self) -> bool:
@@ -127,7 +126,7 @@ class _Simulation:
             agent_input = AgentInput(
                 thread_id=self.state.thread_id,
                 messages=list(self.state.messages),
-                new_messages=list(self.state.messages[self._seen :]),
+                new_messages=list(self.state.messages[self.state._agent_seen :]),
                 scenario_state=self.state,
             )
             started = time.perf_counter()
@@ -138,7 +137,7 @@ class _Simulation:
             turn = response if isinstance(response, AgentTurn) else AgentTurn(content=str(response or ""))
         self.state.add_agent_message(turn.content, tools=turn.tools, references=turn.references)
         self.state.current_turn += 1
-        self._seen = len(self.state.messages)
+        self.state._agent_seen = len(self.state.messages)
         self._log("agent", turn.content)
 
     def _require_judge(self) -> JudgeAgent:
@@ -260,7 +259,11 @@ class _Simulation:
                 self.failure_reason = f"fail(): {reasoning}" if reasoning else "fail() step"
                 self.forced_outcome = False
             case _ if callable(step):
-                await _call(step, self.state)
+                # A callable may end the scenario by returning succeed()/fail(),
+                # e.g. an early-exit check once an attack objective is reached.
+                outcome = await _call(step, self.state)
+                if isinstance(outcome, SucceedStep | FailStep):
+                    await self.run_step(outcome)
             case _:
                 raise TypeError(f"unknown script step: {step!r}")
 

@@ -134,8 +134,8 @@ def test_tool_calls_and_last_tool_call() -> None:
     state = _state()
     state.tool_executions = [first, failed, second, other]
 
-    assert state.tool_calls("search") == [first, second]
-    assert state.tool_calls() == [first, second, other]
+    assert [call.execution for call in state.tool_calls("search")] == [first, second]
+    assert [call.name for call in state.tool_calls()] == ["search", "search", "book"]
     assert state.tool_calls("absent") == []
     assert state.last_tool_call("search") is second
     assert state.last_tool_call() is other
@@ -398,3 +398,99 @@ def test_failure_summary_does_not_repeat_identical_reasoning() -> None:
     result = _result(failure_reason="fail(): nope", reasoning="fail(): nope")
 
     assert result.failure_summary() == "scenario 'refund' failed; reason: fail(): nope"
+
+
+# -- tool call view and rollback -------------------------------------------------
+
+
+def _executed(name: str, args: dict[str, object], result: str) -> ToolExecution:
+    return ToolExecution(tool_name=name, tool_args=args, result=result)
+
+
+def test_tool_calls_view_exposes_inputs_outputs_and_turns() -> None:
+    state = _state()
+    state.add_user_message("find order 1")
+    state.add_agent_message("found", tools=[_executed("lookup", {"id": "1"}, "order 1")])
+    state.add_user_message("and order 2?")
+    state.add_agent_message("found too", tools=[_executed("lookup", {"id": "2"}, "order 2")])
+
+    calls = state.tool_calls("lookup")
+
+    assert len(calls) == 2
+    assert calls.inputs == [{"id": "1"}, {"id": "2"}]
+    assert calls.outputs == ["order 1", "order 2"]
+    assert [call.turn for call in calls] == [0, 1]
+    assert calls.first.input == {"id": "1"}
+    assert calls.last.output == "order 2"
+    assert calls[1].name == "lookup"
+    assert list(calls[:1]) == [calls.first]
+    assert "lookup" in repr(calls)
+    assert calls == state.tool_calls("lookup")
+    assert calls != "lookup"
+
+
+def test_empty_tool_calls_give_falsy_picks() -> None:
+    calls = _state().tool_calls("missing")
+
+    assert not calls.first
+    assert not calls.last
+    assert calls.last.name == "missing"
+    assert calls.inputs == []
+    assert calls.outputs == []
+
+
+def test_hand_added_tool_calls_have_no_turn() -> None:
+    state = _state()
+    state.tool_executions = [_executed("lookup", {}, "x")]
+
+    assert state.tool_calls().first.turn is None
+
+
+def test_rollback_drops_messages_and_what_their_turns_produced() -> None:
+    kept_tool, removed_tool = _executed("lookup", {}, "a"), _executed("refund", {}, "b")
+    kept_ref = MessageReferences(query="q1", references=["first"])
+    removed_ref = MessageReferences(query="q2", references=["second"])
+    state = _state()
+    state.add_user_message("one")
+    state.add_agent_message("first answer", tools=[kept_tool], references=[kept_ref])
+    state.add_user_message("two")
+    state.add_agent_message("second answer", tools=[removed_tool], references=[removed_ref])
+    state.current_turn = 2
+    hand_added = _executed("manual", {}, "c")
+    state.tool_executions.append(hand_added)
+    executions = state.tool_executions
+
+    removed = state.rollback_messages_to(2)
+
+    assert removed == [
+        {"role": "user", "content": "two"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+    assert [m["content"] for m in state.messages] == ["one", "first answer"]
+    assert state.tool_executions is executions
+    assert state.tool_executions == [kept_tool, hand_added]
+    assert state.references == [kept_ref]
+    assert state.current_turn == 2
+
+
+def test_rollback_index_is_clamped_and_must_not_be_negative() -> None:
+    state = _state()
+    state.add_user_message("one")
+
+    assert state.rollback_messages_to(10) == []
+    assert len(state.messages) == 1
+    with pytest.raises(ValueError, match=">= 0"):
+        state.rollback_messages_to(-1)
+
+
+def test_turns_after_a_rollback_count_remaining_agent_messages() -> None:
+    state = _state()
+    state.add_user_message("one")
+    state.add_agent_message("a1")
+    state.add_user_message("two")
+    state.add_agent_message("a2")
+    state.rollback_messages_to(2)
+    state.add_user_message("two again")
+    state.add_agent_message("a2 again", tools=[_executed("lookup", {}, "x")])
+
+    assert state.tool_calls().first.turn == 1

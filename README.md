@@ -118,7 +118,7 @@ and in which order:
 | `judge()` | final verdict on the judge's criteria; later steps still run |
 | `judge(criteria=[...], additional_context=...)` | checkpoint: fails the scenario on the spot if a criterion fails, goes on otherwise |
 | `succeed(reasoning)` / `fail(reasoning)` | end the scenario right here |
-| any callable | gets the `ScenarioState`; sync or async; raise `AssertionError` to fail |
+| any callable | gets the `ScenarioState`; sync or async; raise `AssertionError` to fail, return `succeed()`/`fail()` to end the scenario |
 
 `proceed()` stops at the first of these: `turns` turns played, `max_turns` reached, the simulator reporting the
 goal as achieved, or the judge concluding it has seen enough. The judge is not consulted before `min_turns`
@@ -166,6 +166,11 @@ state.has_tool_call("lookup_order")         # ran cleanly at least once
 state.tool_call_names()                     # names in call order, with repeats
 state.has_tool_calls_in_order(["search", "lookup_order"])  # subsequence; other calls may sit between
 state.last_tool_call("lookup_order")        # the ToolExecution, or None
+
+calls = state.tool_calls("lookup_order")    # ToolCalls: a sequence of ToolCall(name, input, output, turn)
+calls.last.input == {"order_id": "1042"}
+calls.outputs                               # every result, in order
+assert not state.tool_calls("refund").first # an empty, falsy call when the tool never ran
 ```
 
 Only clean executions count: a call that errored, was rejected or is paused waiting for confirmation does not
@@ -297,6 +302,11 @@ class MyAdapter(sim.AgentAdapter):
 
 `AgentInput` has the whole transcript (`messages`), what changed since the agent last spoke (`new_messages`)
 and the live `scenario_state`.
+
+`state.rollback_messages_to(index)` cuts the transcript back (with the tool calls and references of the removed
+turns) and returns what it removed; rolled-back turns still count against `max_turns`. An agno agent keeps its
+own session history, so for the rollback to reach the agent use `agno_adapter(..., history="transcript")`: every
+call then replays the transcript as messages in a fresh session.
 
 ## Compared with LangWatch Scenario
 

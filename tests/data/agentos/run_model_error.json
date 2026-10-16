@@ -1,0 +1,43 @@
+{
+  "run_id": "8a29bfa2-7866-4c52-b429-d59ceed3eab9",
+  "agent_id": "support",
+  "agent_name": "Support",
+  "session_id": "thread-4",
+  "content": "upstream model gateway 504",
+  "content_type": "str",
+  "model": "scripted-1",
+  "model_provider": "Fake",
+  "session_state": {},
+  "created_at": 1792169424,
+  "status": "ERROR",
+  "metrics": {
+    "duration": 0.004947321000031479
+  },
+  "messages": [
+    {
+      "id": "4c53c8b4-666a-400a-a97c-df592c8ab72d",
+      "content": "fail boom\n\nUse the following references from the knowledge base if it helps:\n<references>\n[\n  {\n    \"content\": \"Refunds take 5 days.\",\n    \"meta_data\": {\n      \"url\": \"https://kb.example/refunds\"\n    }\n  }\n]\n</references>",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "user",
+      "created_at": 1792169424
+    }
+  ],
+  "references": [
+    {
+      "query": "fail boom",
+      "references": [
+        {
+          "content": "Refunds take 5 days.",
+          "meta_data": {
+            "url": "https://kb.example/refunds"
+          }
+        }
+      ],
+      "time": 0.0001
+    }
+  ],
+  "input": {
+    "input_content": "fail boom"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "run_id": "28f10e8a-fe89-4093-8856-5907586ec523",
+  "agent_id": "support",
+  "agent_name": "Support",
+  "session_id": "thread-1",
+  "user_id": "u-42",
+  "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+  "content_type": "str",
+  "model": "scripted-1",
+  "model_provider": "Fake",
+  "session_state": {
+    "plan": "pro"
+  },
+  "created_at": 1792169424,
+  "status": "COMPLETED",
+  "metrics": {
+    "time_to_first_token": 0.006322382999996989,
+    "duration": 0.00882855700001528
+  },
+  "messages": [
+    {
+      "id": "cb0de38b-0513-4c7e-8af5-2989c4f66b90",
+      "content": "Where is my order 1042?\n\nUse the following references from the knowledge base if it helps:\n<references>\n[\n  {\n    \"content\": \"Refunds take 5 days.\",\n    \"meta_data\": {\n      \"url\": \"https://kb.example/refunds\"\n    }\n  }\n]\n</references>",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "user",
+      "created_at": 1792169424
+    },
+    {
+      "id": "7b200c1c-182d-4fb0-9986-4059cec13c81",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "lookup_order",
+            "arguments": "{\"order_id\": \"1042\"}"
+          }
+        }
+      ],
+      "created_at": 1792169424
+    },
+    {
+      "id": "27cbc207-5fcf-4740-af4e-14a0ab6ad721",
+      "content": "{\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "tool_name": "lookup_order",
+      "tool_args": {
+        "order_id": "1042"
+      },
+      "tool_call_error": false,
+      "created_at": 1792169424
+    },
+    {
+      "id": "327afae5-3b4e-456e-832d-7032078ad7b2",
+      "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "assistant",
+      "metrics": {
+        "time_to_first_token": 0.00011958400000366964
+      },
+      "created_at": 1792169424
+    }
+  ],
+  "references": [
+    {
+      "query": "Where is my order 1042?",
+      "references": [
+        {
+          "content": "Refunds take 5 days.",
+          "meta_data": {
+            "url": "https://kb.example/refunds"
+          }
+        }
+      ],
+      "time": 0.0001
+    }
+  ],
+  "tools": [
+    {
+      "tool_call_id": "call_1",
+      "tool_name": "lookup_order",
+      "tool_args": {
+        "order_id": "1042"
+      },
+      "tool_call_error": false,
+      "result": "{\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "metrics": {
+        "start_time": 1792169424.6288712,
+        "end_time": 1792169424.6303394,
+        "duration": 0.0014681919999475213
+      },
+      "child_run_id": null,
+      "stop_after_tool_call": false,
+      "created_at": 1792169424,
+      "requires_confirmation": null,
+      "confirmed": null,
+      "confirmation_note": null,
+      "requires_user_input": null,
+      "user_input_schema": null,
+      "user_feedback_schema": null,
+      "answered": null,
+      "external_execution_required": null,
+      "external_execution_silent": null,
+      "approval_type": null,
+      "approval_id": null
+    }
+  ],
+  "input": {
+    "input_content": "Where is my order 1042?"
+  }
+}

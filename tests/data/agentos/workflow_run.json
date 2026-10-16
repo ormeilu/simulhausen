@@ -1,0 +1,160 @@
+{
+  "input": "order 1042?",
+  "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+  "content_type": "str",
+  "workflow_id": "flow",
+  "workflow_name": "Flow",
+  "run_id": "6416209e-d52a-40ab-8bdc-1051ced4edbb",
+  "session_id": "w-1",
+  "created_at": 1792169424,
+  "status": "COMPLETED",
+  "metadata": {},
+  "images": [],
+  "videos": [],
+  "audio": [],
+  "files": [],
+  "step_results": [
+    {
+      "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "step_name": "s1",
+      "step_id": "589ae282-2619-4a87-8d88-b278f13e1a6b",
+      "step_type": "Step",
+      "executor_type": "agent",
+      "executor_name": "Orders",
+      "step_run_id": "c4688543-bf3e-4708-92ab-31fcc5f3bb24",
+      "images": null,
+      "videos": null,
+      "audio": null,
+      "files": null,
+      "metrics": {
+        "time_to_first_token": 0.0007282560000021476,
+        "duration": 0.002354026000034537
+      },
+      "success": true,
+      "error": null,
+      "stop": false,
+      "is_paused": false
+    }
+  ],
+  "step_executor_runs": [
+    {
+      "run_id": "c4688543-bf3e-4708-92ab-31fcc5f3bb24",
+      "agent_id": "orders-member",
+      "agent_name": "Orders",
+      "session_id": "w-1",
+      "parent_run_id": "6416209e-d52a-40ab-8bdc-1051ced4edbb",
+      "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "content_type": "str",
+      "model": "scripted-1",
+      "model_provider": "Fake",
+      "session_state": {},
+      "created_at": 1792169424,
+      "status": "COMPLETED",
+      "workflow_step_id": "589ae282-2619-4a87-8d88-b278f13e1a6b",
+      "metrics": {
+        "time_to_first_token": 0.0007282560000021476,
+        "duration": 0.002354026000034537
+      },
+      "messages": [
+        {
+          "id": "d5e12d54-8203-43a2-b959-6ae9fe753961",
+          "content": "order 1042?",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "user",
+          "created_at": 1792169424
+        },
+        {
+          "id": "8b7d9e6c-af63-4780-871b-e01deeee7013",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "lookup_order",
+                "arguments": "{\"order_id\": \"1042\"}"
+              }
+            }
+          ],
+          "created_at": 1792169424
+        },
+        {
+          "id": "5655ca73-77c1-49aa-9637-13a87b4201b2",
+          "content": "{\"order_id\": \"1042\", \"status\": \"shipped\"}",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "tool_name": "lookup_order",
+          "tool_args": {
+            "order_id": "1042"
+          },
+          "tool_call_error": false,
+          "created_at": 1792169424
+        },
+        {
+          "id": "bf8c8dcd-989e-44aa-a419-e0cca539559d",
+          "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "assistant",
+          "metrics": {
+            "time_to_first_token": 2.943099991625786e-05
+          },
+          "created_at": 1792169424
+        }
+      ],
+      "metadata": {},
+      "tools": [
+        {
+          "tool_call_id": "call_1",
+          "tool_name": "lookup_order",
+          "tool_args": {
+            "order_id": "1042"
+          },
+          "tool_call_error": false,
+          "result": "{\"order_id\": \"1042\", \"status\": \"shipped\"}",
+          "metrics": {
+            "start_time": 1792169424.8857791,
+            "end_time": 1792169424.8867254,
+            "duration": 0.0009462130000201796
+          },
+          "child_run_id": null,
+          "stop_after_tool_call": false,
+          "created_at": 1792169424,
+          "requires_confirmation": null,
+          "confirmed": null,
+          "confirmation_note": null,
+          "requires_user_input": null,
+          "user_input_schema": null,
+          "user_feedback_schema": null,
+          "answered": null,
+          "external_execution_required": null,
+          "external_execution_silent": null,
+          "approval_type": null,
+          "approval_id": null
+        }
+      ],
+      "input": {
+        "input_content": "order 1042?"
+      }
+    }
+  ],
+  "metrics": {
+    "steps": {
+      "s1": {
+        "step_name": "s1",
+        "executor_type": "agent",
+        "executor_name": "Orders",
+        "metrics": {
+          "time_to_first_token": 0.0007282560000021476,
+          "duration": 0.002354026000034537
+        }
+      }
+    },
+    "duration": 0.004572434000010617
+  }
+}

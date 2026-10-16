@@ -33,6 +33,13 @@ from simulhausen.exceptions import (
     SimulationHarnessError,
     SimulationStructuredOutputError,
 )
+from simulhausen.http_adapters import (
+    a2a_adapter,
+    agentos_adapter,
+    langgraph_adapter,
+    openai_chat_adapter,
+    openai_responses_adapter,
+)
 from simulhausen.red_team import CrescendoStrategy, GoatStrategy, RedTeamAgent, RedTeamStrategy
 from simulhausen.reporting import collector
 from simulhausen.runner import run
@@ -90,7 +97,9 @@ __all__ = [
     "UserSimulatorAgent",
     "UserTurn",
     "__version__",
+    "a2a_adapter",
     "agent",
+    "agentos_adapter",
     "agno_adapter",
     "cache",
     "clear_cache",
@@ -100,7 +109,10 @@ __all__ = [
     "function_adapter",
     "get_config",
     "judge",
+    "langgraph_adapter",
     "message",
+    "openai_chat_adapter",
+    "openai_responses_adapter",
     "proceed",
     "run",
     "succeed",

@@ -1,0 +1,19 @@
+{
+  "run_id": "c5eea6b2-fe9d-4759-b367-ed8bfcef2ed2",
+  "agent_id": "support",
+  "agent_name": "Support",
+  "session_id": "thread-3",
+  "content": "Sorry, I can't help with that.",
+  "content_type": "str",
+  "model": "scripted-1",
+  "model_provider": "Fake",
+  "session_state": {},
+  "created_at": 1792169424,
+  "status": "ERROR",
+  "metrics": {
+    "duration": 0.0003230259999327245
+  },
+  "input": {
+    "input_content": "something forbidden"
+  }
+}

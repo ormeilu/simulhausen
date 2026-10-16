@@ -1,0 +1,59 @@
+event: TeamRunStarted
+data: {"created_at":1792169424,"event":"TeamRunStarted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: TeamModelRequestStarted
+data: {"created_at":1792169424,"event":"TeamModelRequestStarted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: TeamModelRequestCompleted
+data: {"created_at":1792169424,"event":"TeamModelRequestCompleted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake","input_tokens":0,"output_tokens":0,"total_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}
+
+event: TeamToolCallStarted
+data: {"created_at":1792169424,"event":"TeamToolCallStarted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"tool":{"tool_call_id":"call_t1","tool_name":"delegate_task_to_member","tool_args":{"member_id":"orders-member","task":"check order 1042"},"tool_call_error":null,"result":null,"metrics":null,"child_run_id":null,"stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}}
+
+event: RunStarted
+data: {"created_at":1792169424,"event":"RunStarted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: ModelRequestStarted
+data: {"created_at":1792169424,"event":"ModelRequestStarted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: ModelRequestCompleted
+data: {"created_at":1792169424,"event":"ModelRequestCompleted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake","input_tokens":0,"output_tokens":0,"total_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}
+
+event: ToolCallStarted
+data: {"created_at":1792169424,"event":"ToolCallStarted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"tool":{"tool_call_id":"call_1","tool_name":"lookup_order","tool_args":{"order_id":"1042"},"tool_call_error":null,"result":null,"metrics":null,"child_run_id":null,"stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}}
+
+event: ToolCallCompleted
+data: {"created_at":1792169424,"event":"ToolCallCompleted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"content":"lookup_order(order_id=1042) completed in 0.0019s. ","tool":{"tool_call_id":"call_1","tool_name":"lookup_order","tool_args":{"order_id":"1042"},"tool_call_error":false,"result":"{\"order_id\": \"1042\", \"status\": \"shipped\"}","metrics":{"start_time":1792169424.9207542,"end_time":1792169424.9226787,"duration":0.0019246130000283301},"child_run_id":null,"stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}}
+
+event: ModelRequestStarted
+data: {"created_at":1792169424,"event":"ModelRequestStarted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: RunContent
+data: {"created_at":1792169424,"event":"RunContent","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"content":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","workflow_agent":false,"content_type":"str","reasoning_content":""}
+
+event: ModelRequestCompleted
+data: {"created_at":1792169424,"event":"ModelRequestCompleted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake","input_tokens":0,"output_tokens":0,"total_tokens":0,"time_to_first_token":4.585100009535381e-05,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}
+
+event: RunContentCompleted
+data: {"created_at":1792169424,"event":"RunContentCompleted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0}
+
+event: RunCompleted
+data: {"created_at":1792169424,"event":"RunCompleted","agent_id":"orders-member","agent_name":"Orders","run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"content":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","content_type":"str","session_state":{"current_session_id":"t-2","current_run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526"},"metrics":{"time_to_first_token":0.0012087269999483397,"duration":0.004655865000017911,"details":{"model":[{"id":"scripted-1","provider":"Fake"}]}}}
+
+event: TeamToolCallCompleted
+data: {"created_at":1792169424,"event":"TeamToolCallCompleted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"content":"delegate_task_to_member(member_id=orders-member, task=check order 1042) completed in 0.0005s. ","tool":{"tool_call_id":"call_t1","tool_name":"delegate_task_to_member","tool_args":{"member_id":"orders-member","task":"check order 1042"},"tool_call_error":false,"result":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","metrics":{"start_time":1792169424.92589,"end_time":1792169424.9264317,"duration":0.0005417339999667092},"child_run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}}
+
+event: TeamModelRequestStarted
+data: {"created_at":1792169424,"event":"TeamModelRequestStarted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: TeamRunContent
+data: {"created_at":1792169424,"event":"TeamRunContent","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"content":"Team answer: Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","content_type":"str","reasoning_content":""}
+
+event: TeamModelRequestCompleted
+data: {"created_at":1792169424,"event":"TeamModelRequestCompleted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"model":"scripted-1","model_provider":"Fake","input_tokens":0,"output_tokens":0,"total_tokens":0,"time_to_first_token":3.816499997810752e-05,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}
+
+event: TeamRunContentCompleted
+data: {"created_at":1792169424,"event":"TeamRunContentCompleted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0}
+
+event: TeamRunCompleted
+data: {"created_at":1792169424,"event":"TeamRunCompleted","team_id":"desk","team_name":"Desk","run_id":"175c069e-11f8-4033-b04b-b24b4182a090","session_id":"t-2","nested_depth":0,"content":"Team answer: Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","content_type":"str","member_responses":[{"run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526","agent_id":"orders-member","agent_name":"Orders","session_id":"t-2","parent_run_id":"175c069e-11f8-4033-b04b-b24b4182a090","content":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","content_type":"str","model":"scripted-1","model_provider":"Fake","session_state":{"current_session_id":"t-2","current_run_id":"d430a595-1ee0-4f1c-a82d-830e2f9cc526"},"created_at":1792169424,"status":"COMPLETED","metrics":{"time_to_first_token":0.0012087269999483397,"duration":0.004655865000017911,"details":{"model":[{"id":"scripted-1","provider":"Fake"}]}},"messages":[{"id":"29386e87-8ce8-4581-84f3-604f91561d88","content":"check order 1042","from_history":false,"stop_after_tool_call":false,"role":"user","created_at":1792169424},{"id":"846d92a6-682f-4234-97f4-f44cdbd02043","from_history":false,"stop_after_tool_call":false,"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup_order","arguments":"{\"order_id\": \"1042\"}"}}],"created_at":1792169424},{"id":"597ac780-396e-4932-be34-8062150cd746","content":"{\"order_id\": \"1042\", \"status\": \"shipped\"}","from_history":false,"stop_after_tool_call":false,"role":"tool","tool_call_id":"call_1","tool_name":"lookup_order","tool_args":{"order_id":"1042"},"tool_call_error":false,"created_at":1792169424},{"id":"eb3b6bca-03f8-41da-8872-63044f5f8ccb","content":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","from_history":false,"stop_after_tool_call":false,"role":"assistant","metrics":{"time_to_first_token":4.585100009535381e-05},"created_at":1792169424}],"tools":[{"tool_call_id":"call_1","tool_name":"lookup_order","tool_args":{"order_id":"1042"},"tool_call_error":false,"result":"{\"order_id\": \"1042\", \"status\": \"shipped\"}","metrics":{"start_time":1792169424.9207542,"end_time":1792169424.9226787,"duration":0.0019246130000283301},"child_run_id":null,"stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}],"input":{"input_content":"check order 1042"}}],"metrics":{"time_to_first_token":0.006770281000058276,"duration":0.018226372000071933,"details":{"model":[{"id":"scripted-1","provider":"Fake"}]}}}

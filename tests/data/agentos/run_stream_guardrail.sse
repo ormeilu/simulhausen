@@ -1,0 +1,8 @@
+event: RunStarted
+data: {"created_at":1792169424,"event":"RunStarted","agent_id":"support","agent_name":"Support","run_id":"b77eda23-52f3-4e57-ac90-381bfdbcd917","session_id":"thread-6","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: PreHookStarted
+data: {"created_at":1792169424,"event":"PreHookStarted","agent_id":"support","agent_name":"Support","run_id":"b77eda23-52f3-4e57-ac90-381bfdbcd917","session_id":"thread-6","nested_depth":0,"pre_hook_name":"guardrail","run_input":{"input_content":"forbidden stuff"}}
+
+event: RunError
+data: {"created_at":1792169424,"event":"RunError","agent_id":"support","agent_name":"Support","run_id":"b77eda23-52f3-4e57-ac90-381bfdbcd917","session_id":"thread-6","nested_depth":0,"content":"Sorry, I can't help with that.","error_type":"input_check_error","error_id":"input_not_allowed"}

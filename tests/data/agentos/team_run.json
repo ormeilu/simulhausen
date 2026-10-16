@@ -1,0 +1,219 @@
+{
+  "run_id": "7dc17274-6729-4715-a1ea-a5ad29b976f1",
+  "team_id": "desk",
+  "team_name": "Desk",
+  "session_id": "t-1",
+  "content": "Team answer: Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+  "content_type": "str",
+  "model": "scripted-1",
+  "model_provider": "Fake",
+  "created_at": 1792169424,
+  "metrics": {
+    "time_to_first_token": 0.0073843150000811875,
+    "duration": 0.013874031999989711
+  },
+  "status": "COMPLETED",
+  "messages": [
+    {
+      "id": "9ec01d6e-93fc-4abc-a7a1-d61eb2d20b90",
+      "content": "<team>\nYou coordinate this team to fulfill the user's request. You have a team of specialists, listed below. Delegate to members when their expertise or tools are needed; answer directly — including with your own tools — when they are not.\n\n<team_members>\n<member id=\"orders-member\" name=\"Orders\">\n</member>\n</team_members>\n\n<delegation>\nYou work in coordinate mode: you hand sub-tasks to members with `delegate_task_to_member` and write the answer yourself.\n\n- Match each sub-task to the member whose role and description fit it best. When sub-tasks do not depend on each other, delegate them in the same turn instead of one per turn.\n- A member's output is evidence, not your answer. When a member fails, refuses, or returns nothing, say so plainly and name what it reported — never supply a cause, source, or finding the member did not state.\n- If a response is off-target, re-delegate with clearer instructions or try a better-suited member. If it still misses, answer with what you have and say what is missing — do not work through the roster.\n- Write one answer. Resolve contradictions, add structure, and fill gaps only where you can state the basis for it. Never concatenate member outputs.\n\nMembers do not see this conversation. Each one gets only the text you write for it, so carry over every name, number and earlier answer it needs, and say what a good result looks like.\nMember ids are the ids shown in the roster above, used exactly as written.\n</delegation>\n</team>",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "system",
+      "created_at": 1792169424
+    },
+    {
+      "id": "4bb699fc-b8e6-48b6-9c10-0b16e37d63bd",
+      "content": "check my order",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "user",
+      "created_at": 1792169424
+    },
+    {
+      "id": "1e0f5fd5-8bfa-46a1-b79e-0b24e4963bc4",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "call_t1",
+          "type": "function",
+          "function": {
+            "name": "delegate_task_to_member",
+            "arguments": "{\"member_id\": \"orders-member\", \"task\": \"check order 1042\"}"
+          }
+        }
+      ],
+      "created_at": 1792169424
+    },
+    {
+      "id": "8493beb4-c29e-4047-a010-087480b2c3bb",
+      "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "tool",
+      "tool_call_id": "call_t1",
+      "tool_name": "delegate_task_to_member",
+      "tool_args": {
+        "member_id": "orders-member",
+        "task": "check order 1042"
+      },
+      "tool_call_error": false,
+      "created_at": 1792169424
+    },
+    {
+      "id": "2df16a51-7902-4d0d-8387-c59585016463",
+      "content": "Team answer: Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "from_history": false,
+      "stop_after_tool_call": false,
+      "role": "assistant",
+      "metrics": {
+        "time_to_first_token": 3.012399997714965e-05
+      },
+      "created_at": 1792169424
+    }
+  ],
+  "member_responses": [
+    {
+      "run_id": "05905df4-158c-428c-98e4-105c745b7e0c",
+      "agent_id": "orders-member",
+      "agent_name": "Orders",
+      "session_id": "t-1",
+      "parent_run_id": "7dc17274-6729-4715-a1ea-a5ad29b976f1",
+      "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "content_type": "str",
+      "model": "scripted-1",
+      "model_provider": "Fake",
+      "session_state": {
+        "current_session_id": "t-1",
+        "current_run_id": "05905df4-158c-428c-98e4-105c745b7e0c"
+      },
+      "created_at": 1792169424,
+      "status": "COMPLETED",
+      "metrics": {
+        "time_to_first_token": 0.0013068459999203696,
+        "duration": 0.0030816109999705077
+      },
+      "messages": [
+        {
+          "id": "779dc4f5-1841-4772-98a2-08ed4825c7f5",
+          "content": "check order 1042",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "user",
+          "created_at": 1792169424
+        },
+        {
+          "id": "be19c46e-b627-4ed4-bfe0-9176c52e6b32",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "lookup_order",
+                "arguments": "{\"order_id\": \"1042\"}"
+              }
+            }
+          ],
+          "created_at": 1792169424
+        },
+        {
+          "id": "39a5e800-4bb4-4b56-bbaf-b69ed11812ee",
+          "content": "{\"order_id\": \"1042\", \"status\": \"shipped\"}",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "tool_name": "lookup_order",
+          "tool_args": {
+            "order_id": "1042"
+          },
+          "tool_call_error": false,
+          "created_at": 1792169424
+        },
+        {
+          "id": "f56528af-1e54-4166-8498-511aaca62a5b",
+          "content": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+          "from_history": false,
+          "stop_after_tool_call": false,
+          "role": "assistant",
+          "metrics": {
+            "time_to_first_token": 8.031599998048478e-05
+          },
+          "created_at": 1792169424
+        }
+      ],
+      "tools": [
+        {
+          "tool_call_id": "call_1",
+          "tool_name": "lookup_order",
+          "tool_args": {
+            "order_id": "1042"
+          },
+          "tool_call_error": false,
+          "result": "{\"order_id\": \"1042\", \"status\": \"shipped\"}",
+          "metrics": {
+            "start_time": 1792169424.8452644,
+            "end_time": 1792169424.846335,
+            "duration": 0.0010704430000032517
+          },
+          "child_run_id": null,
+          "stop_after_tool_call": false,
+          "created_at": 1792169424,
+          "requires_confirmation": null,
+          "confirmed": null,
+          "confirmation_note": null,
+          "requires_user_input": null,
+          "user_input_schema": null,
+          "user_feedback_schema": null,
+          "answered": null,
+          "external_execution_required": null,
+          "external_execution_silent": null,
+          "approval_type": null,
+          "approval_id": null
+        }
+      ],
+      "input": {
+        "input_content": "check order 1042"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "tool_call_id": "call_t1",
+      "tool_name": "delegate_task_to_member",
+      "tool_args": {
+        "member_id": "orders-member",
+        "task": "check order 1042"
+      },
+      "tool_call_error": false,
+      "result": "Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}",
+      "metrics": {
+        "start_time": 1792169424.8478134,
+        "end_time": 1792169424.848397,
+        "duration": 0.0005835419999584701
+      },
+      "child_run_id": null,
+      "stop_after_tool_call": false,
+      "created_at": 1792169424,
+      "requires_confirmation": null,
+      "confirmed": null,
+      "confirmation_note": null,
+      "requires_user_input": null,
+      "user_input_schema": null,
+      "user_feedback_schema": null,
+      "answered": null,
+      "external_execution_required": null,
+      "external_execution_silent": null,
+      "approval_type": null,
+      "approval_id": null
+    }
+  ],
+  "input": {
+    "input_content": "check my order"
+  }
+}

@@ -456,6 +456,195 @@ failed scenarios out of all of them. On GitHub Actions:
 
 The report links the CI job when `CI_JOB_URL` (GitLab) or the `GITHUB_*` run variables are set.
 
+## Harbor
+
+[Harbor](https://github.com/harbor-framework/harbor) evaluates agents on tasks: a task is a directory with a
+container image, an instruction and a verifier script that writes `/logs/verifier/reward.json`. The
+`simulhausen harbor` commands run scenarios inside such task containers, and `simulhausen harbor export` turns a
+scenario file into one task per scenario. simulhausen never imports Harbor (which depends on litellm); the
+commands only read and write files where Harbor expects them.
+
+There are two ways to run a task:
+
+- **Agent mode** (the default). Harbor's agent is your agent under test. A Harbor agent from the separate
+  `simulhausen-harbor` package (`-a simulhausen_harbor:AgentOSAgent` and friends) runs `simulhausen harbor play`
+  in the task container: the user simulator talks to your agent and the dialogue lands in
+  `/logs/agent/simulhausen/`. The verifier then runs `simulhausen harbor judge`, which grades the dialogue and
+  writes the reward. The criteria reach the container only with the verifier's files, never during the dialogue.
+- **Verifier mode**. Run with `harbor run -a nop`; the verifier plays and grades in one go
+  (`simulhausen harbor run`). Nothing to install on the Harbor side, but Harbor's agent column says `nop`, and
+  the whole dialogue counts against the verifier's timeout.
+
+### Scenario files
+
+A task cannot carry Python callables, so its scenarios are data, in TOML or JSON (JSON mirrors the same
+structure):
+
+```toml
+[defaults]                       # merged into every scenario; a scenario key replaces the default whole
+max_turns = 6
+simulator_model = "openai:gpt-4.1-mini"
+judge_model = "openai:gpt-4.1-mini"
+target = { type = "agentos", base_url = "http://agent-api:7777", agent_id = "support", api_key_env = "AGENTOS_API_KEY" }
+
+[[scenarios]]
+id = "refund-duplicated-charge"  # optional, defaults to the slugified name; the Harbor task is "<org>/<id>"
+name = "refund: duplicated charge"
+description = "The user was charged twice for order 1042 and wants the extra charge refunded."
+persona = "Impatient, writes short lowercase messages."
+criteria = ["The agent looks the order up before promising anything", "The agent does not invent a refund amount"]
+score_threshold = 7
+tags = ["support"]
+checks = [
+  { type = "tool_called", tool = "lookup_order" },
+  { type = "tool_not_called", tool = "issue_refund" },
+]
+
+[[scenarios.script]]
+user = "i was charged twice"
+[[scenarios.script]]
+agent = true
+[[scenarios.script]]
+judge = { criteria = ["The agent asks for the order number"] }
+[[scenarios.script]]
+proceed = { turns = 3 }
+```
+
+A scenario takes `name`, `description`, `persona`, `simulator_prompt` (replaces the simulator's built-in
+prompt), `criteria`, `score_threshold`, `additional_context` (judge only), `max_turns` (default 10),
+`min_turns`, `tags` (task keywords), `checks`, `script`, `target`, `simulator_model` and `judge_model`. Unknown
+keys are errors, so a typo cannot drop your criteria. Without a script the simulator and the agent talk freely
+(a single `proceed`). Each script step holds exactly one of these keys:
+
+| Step | What it does |
+|---|---|
+| `user = "text"` / `user = true` | a fixed user message / one the simulator writes |
+| `agent = true` / `agent = "text"` | call the agent under test / inject a reply |
+| `message = { role = "assistant", content = "..." }` | append a message as is |
+| `proceed = true` / `proceed = { turns = 3 }` | the simulator and the agent talk on their own |
+| `judge = { criteria = [...], additional_context = "..." }` | checkpoint: these criteria are graded on the dialogue up to this step |
+| `check = { type = "tool_called", tool = "..." }` | checkpoint check on the dialogue up to this step |
+| `judge = true` | the final verdict; the dialogue stops here, so it must be the last step |
+
+Checks replace script assertions. They run in the judge phase, `checks` on the whole dialogue and `check` steps
+on the dialogue up to their step: `tool_called`, `tool_not_called`, `tools_in_order` (`tools = [...]`, a
+subsequence) and `reply_contains` / `reply_not_contains` (`text = "..."`, case-insensitive unless
+`case_sensitive = true`, on any agent reply). Tool checks count only clean executions, like `has_tool_call`.
+
+Two things differ from a Python run. The dialogue is played without a judge, so a `proceed` ends only when the
+simulator reports the goal reached, at `max_turns` or after its `turns` (`min_turns` has no effect), and a
+failed checkpoint does not stop the dialogue: everything is graded afterwards, and any failure fails the scenario.
+
+### Targets
+
+`target` says how to reach the agent under test. `type` picks the adapter and every other key is passed to it:
+
+| `type` | adapter |
+|---|---|
+| `agentos` | `simulhausen.http_adapters.agentos_adapter` |
+| `openai-chat` | `simulhausen.http_adapters.openai_chat_adapter` |
+| `openai-responses` | `simulhausen.http_adapters.openai_responses_adapter` |
+| `a2a` | `simulhausen.http_adapters.a2a_adapter` |
+| `langgraph` | `simulhausen.http_adapters.langgraph_adapter` |
+| `python` | `factory = "package.module:attribute"`, a callable returning an `AgentAdapter` or an agno Agent, Team or Workflow; the other keys are its arguments |
+
+A key ending in `_env` names an environment variable: `api_key_env = "AGENTOS_API_KEY"` becomes
+`api_key=os.environ["AGENTOS_API_KEY"]` inside the container, so secrets stay out of the scenario file (which is
+baked into the task image). The transcript records the target without `api_key`, `headers` and similar keys.
+
+`play` and `run` take the first target they find: `--target-json`, `--target-file`, the `SIMULHAUSEN_TARGET`
+variable (JSON), the scenario's `target`, then `[defaults]`.
+
+### Commands
+
+```
+simulhausen harbor play   --scenario PATH [--id ID] [--target-json JSON | --target-file PATH] [--model M] [--out DIR]
+simulhausen harbor judge  --scenario PATH [--id ID] [--transcript PATH] [--model M] [--out DIR]
+                          [--rewards binary|detailed] [--warn-reward skip|zero]
+simulhausen harbor run    --scenario PATH [--id ID] [--target-json JSON | --target-file PATH] [--model M] [--out DIR]
+                          [--rewards ...] [--warn-reward ...]
+simulhausen harbor export SCENARIO_FILE... --output-dir DIR [--mode agent|verifier] [--org ORG]
+                          [--simulhausen-spec REQ] [--pip REQ ...] [--env NAME ...] [--compose FILE]
+                          [--agent-timeout SEC] [--verifier-timeout SEC] [--ids ID ...] [--overwrite]
+                          [--rewards ...] [--warn-reward ...]
+```
+
+`--id` picks a scenario when the file holds several. `play` writes `transcript.json` (what `judge` reads),
+`trajectory.json` (the same dialogue in Harbor's ATIF trajectory format) and `transcript.md` to
+`/logs/agent/simulhausen`. `judge` and `run` write `simulhausen-result.json` (status, reason, every verdict
+and check, the score, times), `transcript.md` with the verdicts on top and, last, `reward.json` to
+`/logs/verifier`. The commands work outside Harbor too, for example
+`simulhausen harbor run --scenario scenarios.toml --id refund-duplicated-charge --out out/`; Python runs as
+`python -m simulhausen` as well. From Python, `simulhausen.harbor.load_scenarios(path)` returns a file's
+scenarios as `ScenarioSpec` models and `simulhausen.harbor.build_target(config)` builds a target's adapter.
+
+Exit codes: 0 when done (for `judge` and `run`, a reward was written), 1 for a usage or configuration error
+(nothing was played or graded), 2 when the scenario could not be verified (`play` did not finish the dialogue,
+or `judge`/`run` came to WARN and wrote no reward). Harbor ignores the verifier's exit code; only the reward
+file counts.
+
+### Rewards and WARN
+
+`--rewards binary` (the default) writes `{"reward": 1}` for PASS and `{"reward": 0}` for FAIL, which keeps
+Harbor's mean and pass@k working. `--rewards detailed` adds `judge_score` (0-1, with `score_threshold`),
+`criteria_pass_rate` (passed among the criteria with a passed or failed verdict) and `criterion_<n>` and
+`check_<n>` (1 or 0; n counts from 1 in file order, the scenario's own entries first, then the checkpoints in
+script order). An inconclusive criterion gets no key, since Harbor takes only numbers. Harbor needs exactly one
+0/1 key for pass@k, so detailed rewards switch it off.
+
+PASS, FAIL and WARN follow the usual rules. A dialogue the harness broke (a backend that kept failing, a
+simulator without structured output), a judge that breaks, a missing transcript and inconclusive criteria
+with none failed are WARN; an error of the agent under test is FAIL. With `--warn-reward skip` (the default) a
+WARN writes no `reward.json`: Harbor records a verifier error, so WARN stays out of the mean the way it stays
+out of simulhausen's pass rate (Harbor's default metrics count a missing reward as 0, so use a metric that
+skips them, such as the one in `simulhausen-harbor`). `--warn-reward zero` writes `{"reward": 0}` instead.
+
+### Exporting tasks
+
+```bash
+simulhausen harbor export scenarios.toml --output-dir tasks --org acme
+```
+
+writes one directory per scenario: `task.toml` (named `acme/<id>`, with the scenario name as description and
+its tags as keywords), `instruction.md` (the description), `environment/Dockerfile` and `tests/` with the full
+scenario and `test.sh`. The image is `python:3.12-slim` with a pinned uv and `uv pip install
+simulhausen==<this version> openai` (`--simulhausen-spec` and `--pip` change that); in agent mode it also holds
+the scenario without its criteria, checks and judge settings. `--compose sidecar.yaml` becomes
+`environment/docker-compose.yaml`, for an agent under test that belongs to the task. `--mode verifier` writes
+tasks for `-a nop` with a longer verifier timeout (1800 s instead of 600 s). `--overwrite` replaces only
+directories `export` generated.
+
+Then, in agent mode:
+
+```bash
+harbor run -p tasks -a simulhausen_harbor:AgentOSAgent --ak base_url=http://agent-api:7777 --ak agent_id=support \
+  -m support-agent@v3 --sm --extra-docker-compose agentos-sidecar.yaml \
+  --ae OPENAI_API_KEY=$OPENAI_API_KEY -y
+```
+
+and in verifier mode, `harbor run -p tasks -a nop --extra-docker-compose agentos-sidecar.yaml -y`.
+
+### Models and secrets
+
+Models are agno model strings, `"<provider>:<model_id>"`. The simulator takes `--model`, then
+`SIMULHAUSEN_SIMULATOR_MODEL`, then `SIMULHAUSEN_MODEL`, then the scenario's `simulator_model`; the judge
+`--model`, then `SIMULHAUSEN_JUDGE_MODEL`, then `SIMULHAUSEN_MODEL`, then `judge_model`. An empty variable
+counts as unset. The provider's SDK (`openai`, `anthropic`...) must be installed in the image (`export --pip`);
+a missing one is reported by name. A model is built only when needed: a fully scripted dialogue needs no
+simulator model, and a scenario graded only by checks needs no judge model.
+
+Harbor does not copy your shell's variables into the container:
+
+- the verifier gets what `task.toml`'s `[verifier.env]` names: every `export --env NAME` (default
+  `OPENAI_API_KEY`) as `NAME = "${NAME}"`, plus `SIMULHAUSEN_JUDGE_MODEL` and `SIMULHAUSEN_MODEL` when the host
+  has them (verifier mode adds `SIMULHAUSEN_SIMULATOR_MODEL` and `SIMULHAUSEN_TARGET`). In verifier mode, list
+  the target's variables (`--env OPENAI_API_KEY AGENTOS_API_KEY`) too;
+- the agent phase gets what `harbor run --ae NAME=value` passes, such as the simulator's key and the target's
+  `*_env` variables;
+- a sidecar from `docker-compose.yaml` gets variables through `${NAME}` interpolation in that file.
+
+Harbor runs are not cached: the containers are disposable.
+
 ## Caching
 
 Model calls make a simulation slow and expensive, and no two runs say the same thing. With a cache key set,

@@ -618,11 +618,14 @@ Then, in agent mode:
 
 ```bash
 harbor run -p tasks -a simulhausen_harbor:AgentOSAgent --ak base_url=http://agent-api:7777 --ak agent_id=support \
-  -m support-agent@v3 --sm --extra-docker-compose agentos-sidecar.yaml \
+  -m support-agent@v3 --extra-docker-compose agentos-sidecar.yaml \
   --ae OPENAI_API_KEY=$OPENAI_API_KEY -y
 ```
 
-and in verifier mode, `harbor run -p tasks -a nop --extra-docker-compose agentos-sidecar.yaml -y`.
+Harbor groups results by agent, model and dataset, and an agent class has one fixed name, so `-m` is where the
+agent under test gets its label (`support-agent@v3`).
+
+In verifier mode, `harbor run -p tasks -a nop --extra-docker-compose agentos-sidecar.yaml -y`.
 
 ### Models and secrets
 

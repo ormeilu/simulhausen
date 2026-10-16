@@ -16,6 +16,7 @@ end of the script.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -31,7 +32,7 @@ from simulhausen.runner import run
 from simulhausen.script import agent, message, proceed, user
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from simulhausen.harbor.spec import ScenarioSpec, ScriptStepSpec
     from simulhausen.harbor.transcript import StopReason, Transcript
@@ -56,9 +57,12 @@ def build_simulator(spec: ScenarioSpec, model: str | None) -> UserSimulatorAgent
 class _Recorder:
     """Builds the runner script for a scenario and records what happens while it runs."""
 
-    def __init__(self, spec: ScenarioSpec, max_turns: int) -> None:
+    def __init__(
+        self, spec: ScenarioSpec, max_turns: int, on_progress: Callable[[ScenarioState], None] | None = None
+    ) -> None:
         self.spec = spec
         self.max_turns = max_turns
+        self.on_progress = on_progress
         self.state: ScenarioState | None = None
         self.checkpoints: list[Checkpoint] = []
         self.stop_reason: StopReason = "script_end"
@@ -67,7 +71,12 @@ class _Recorder:
         steps: list[ScriptStep] = [self._capture]
         for index, step in enumerate(self.spec.steps):
             steps.extend(self._translate(index, step))
+            steps.append(self._progress)
         return steps
+
+    def _progress(self, state: ScenarioState) -> None:
+        if self.on_progress is not None:
+            self.on_progress(state)
 
     def _capture(self, state: ScenarioState) -> None:
         self.state = state
@@ -106,7 +115,7 @@ class _Recorder:
                 # No judge in play, so only the simulator's goal signal stops a proceed early.
                 self.stop_reason = "goal_achieved"
 
-        return [before, proceed(turns), after]
+        return [before, proceed(turns, on_step=self._progress), after]
 
     def _checkpoint(self, index: int, kind: Literal["judge", "check"]) -> ScriptStep:
         def record(state: ScenarioState) -> None:
@@ -128,6 +137,7 @@ async def play(
     *,
     model: str | None = None,
     simulator: UserSimulatorAgent | None = None,
+    on_progress: Callable[[Transcript], None] | None = None,
 ) -> Transcript:
     """Play ``spec`` against the agent ``target`` describes and return the transcript.
 
@@ -142,12 +152,32 @@ async def play(
     adapter = build_target(target)
     if simulator is None and spec.uses_simulator():
         simulator = build_simulator(spec, model)
-    recorder = _Recorder(spec, spec.max_turns or get_config().max_turns)
+    started = time.perf_counter()
+    scenario = ScenarioRef(id=spec.id, name=spec.name, description=spec.description)
+
+    def progress(state: ScenarioState) -> None:
+        # Written after every message and step: if play is killed (Harbor's agent timeout, SIGKILL), the judge
+        # still finds the dialogue so far, marked as unfinished, instead of no transcript at all.
+        if on_progress is not None:
+            on_progress(
+                build_transcript(
+                    state,
+                    scenario=scenario,
+                    simulhausen_version=__version__,
+                    checkpoints=recorder.checkpoints,
+                    stop_reason="harness_error",
+                    harness_error=True,
+                    error=f"play did not finish: stopped (killed or timed out) after {len(state.messages)} message(s)",
+                    total_time=time.perf_counter() - started,
+                    target=redact_target(target),
+                )
+            )
+
+    recorder = _Recorder(spec, spec.max_turns or get_config().max_turns, progress)
     agents: list[object] = [adapter] if simulator is None else [adapter, simulator]
     first_record = len(collector.records)
     harness_error = False
     error: str | None = None
-    started = time.perf_counter()
     try:
         await run(
             spec.name,
@@ -160,6 +190,13 @@ async def play(
     except SimulationHarnessError as exc:
         harness_error, error = True, _describe(exc)
         recorder.stop_reason = "harness_error"
+    except asyncio.CancelledError:
+        # SIGINT (asyncio.run turns it into a cancellation; play_timeout_sec sends it through timeout(1)):
+        # keep the dialogue played so far, the judge reports it as WARN.
+        if (task := asyncio.current_task()) is not None:
+            task.uncancel()
+        harness_error, error = True, "interrupted (SIGINT or timeout) before the dialogue finished"
+        recorder.stop_reason = "harness_error"
     except Exception as exc:  # noqa: BLE001 - the agent under test may raise anything; the transcript records it
         error = _describe(exc)
         recorder.stop_reason = "error"
@@ -170,7 +207,7 @@ async def play(
     del collector.records[first_record:]
     return build_transcript(
         recorder.state,
-        scenario=ScenarioRef(id=spec.id, name=spec.name, description=spec.description),
+        scenario=scenario,
         simulhausen_version=__version__,
         checkpoints=recorder.checkpoints,
         stop_reason=recorder.stop_reason,

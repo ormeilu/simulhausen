@@ -293,7 +293,8 @@ def test_export(scenario_file: Path, tmp_path: Path, capsys: pytest.CaptureFixtu
     assert 'OPENAI_API_KEY = "${OPENAI_API_KEY}"' in (out / "refund" / "task.toml").read_text()
     printed = capsys.readouterr().out
     assert f"{out / 'refund'}\n" in printed
-    assert f"1 task(s) written; run them with: harbor run -p {out} -a simulhausen_harbor:AgentOSAgent" in printed
+    # The scenario's target is a python factory, which only the generic agent runs.
+    assert f"1 task(s) written; run them with: harbor run -p {out} -a simulhausen_harbor:SimulhausenAgent" in printed
 
 
 def test_export_verifier_mode_with_options(
@@ -302,7 +303,7 @@ def test_export_verifier_mode_with_options(
     out = tmp_path / "tasks"
     argv = ["harbor", "export", str(scenario_file), "--output-dir", str(out), "--mode", "verifier"]
 
-    code = main([*argv, "--pip", "openai", "anthropic", "--env", "AGENTOS_KEY", "--ids", "refund", "--overwrite"])
+    code = main([*argv, "--pip", "openai", "--pip", "anthropic", "--env", "AGENTOS_KEY", "--ids", "refund"])
 
     assert code == EXIT_OK
     task_toml = (out / "refund" / "task.toml").read_text()
@@ -310,6 +311,40 @@ def test_export_verifier_mode_with_options(
     assert "OPENAI_API_KEY" not in task_toml
     assert "openai anthropic\n" in (out / "refund" / "environment" / "Dockerfile").read_text()
     assert f"-p {out} -a nop" in capsys.readouterr().out
+
+
+def test_export_flags_take_one_value_each(scenario_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "tasks"
+
+    code = main(["harbor", "export", "--env", "AGENTOS_KEY", str(scenario_file), "--output-dir", str(out)])
+
+    assert code == EXIT_OK
+    assert 'AGENTOS_KEY = "${AGENTOS_KEY}"' in (out / "refund" / "task.toml").read_text()
+
+
+@pytest.mark.parametrize(
+    ("target", "hint"),
+    [
+        ({"type": "openai-chat", "base_url": "http://llm:8000/v1", "model": "m"}, "OpenAIChatAgent --ak base_url=..."),
+        ({"type": "agentos", "base_url": "http://agent-api:7777", "agent_id": "a"}, "AgentOSAgent --ak base_url="),
+        ({"type": "a2a", "url": "http://agent-api:7777/a2a"}, "A2AAgent --ak url=..."),
+        ({"type": "openai-responses", "base_url": "http://llm:8000/v1", "model": "m"}, "SimulhausenAgent --ak target="),
+        (None, "SimulhausenAgent --ak target=..."),
+    ],
+)
+def test_export_hint_names_the_harbor_agent_for_the_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], target: dict[str, str] | None, hint: str
+) -> None:
+    scenario: dict[str, object] = {"name": "refund", "description": "d", "criteria": ["c"]}
+    if target is not None:
+        scenario["target"] = target
+    scenario_file = tmp_path / "scenarios.json"
+    scenario_file.write_text(json.dumps(scenario))
+
+    code = main(["harbor", "export", str(scenario_file), "--output-dir", str(tmp_path / "tasks")])
+
+    assert code == EXIT_OK
+    assert f"-a simulhausen_harbor:{hint}" in capsys.readouterr().out
 
 
 def test_export_errors_exit_1(scenario_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -1,5 +1,7 @@
 import json
+import shutil
 import stat
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -105,6 +107,30 @@ def test_agent_mode_renders_a_complete_task(scenario_file: Path, tmp_path: Path)
     assert "set -e" not in script.replace("No `set -e`", "")
     assert "mkdir -p /logs/verifier\n" in script
     assert script.endswith("simulhausen harbor judge --scenario /tests/scenario.json --out /logs/verifier\n")
+
+
+def test_a_git_requirement_gets_git_in_the_image(scenario_file: Path, tmp_path: Path) -> None:
+    spec = "simulhausen @ git+https://github.com/ormeilu/simulhausen@main"
+    export_tasks([scenario_file], ExportOptions(output_dir=tmp_path, simulhausen_spec=spec))
+
+    dockerfile = (tmp_path / "refund" / "environment" / "Dockerfile").read_text()
+    git_line = dockerfile.index("apt-get install -y --no-install-recommends git")
+    assert git_line < dockerfile.index("RUN uv pip install")
+    assert f"RUN uv pip install --system --no-cache '{spec}' openai\n" in dockerfile
+
+
+def test_test_sh_says_so_when_the_image_lacks_the_cli(scenario_file: Path, tmp_path: Path) -> None:
+    export_tasks([scenario_file], ExportOptions(output_dir=tmp_path))
+
+    script = tmp_path / "refund" / "tests" / "test.sh"
+    bash = shutil.which("bash")
+    assert bash is not None
+    # An empty PATH: neither simulhausen nor anything else is found, as in an image without the CLI.
+    missing = subprocess.run([bash, str(script)], env={"PATH": ""}, capture_output=True, text=True, check=False)
+
+    assert missing.returncode == 1
+    assert "simulhausen: command not found in the task image" in missing.stderr
+    assert "--simulhausen-spec" in missing.stderr
 
 
 def test_the_image_gets_the_scenario_without_its_criteria(scenario_file: Path, tmp_path: Path) -> None:

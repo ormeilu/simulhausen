@@ -84,7 +84,9 @@ def _report_play(out: Path, transcript: Transcript) -> None:
 def _cmd_play(args: argparse.Namespace) -> int:
     spec = _load(args)
     target = resolve_target_config(spec, target_json=args.target_json, target_file=args.target_file)
-    transcript = asyncio.run(play(spec, target, model=args.model))
+    transcript = asyncio.run(
+        play(spec, target, model=args.model, on_progress=lambda partial: write_play_outputs(args.out, partial))
+    )
     write_play_outputs(args.out, transcript)
     _report_play(args.out, transcript)
     return EXIT_OK if transcript.finished else EXIT_UNVERIFIED
@@ -155,9 +157,27 @@ def _cmd_export(args: argparse.Namespace) -> int:
     written = export_tasks(args.scenario_files, options)
     for task_dir in written:
         print(task_dir)
-    agent = "simulhausen_harbor:AgentOSAgent --ak base_url=..." if options.mode == "agent" else "nop"
+    agent = _harbor_agent_hint(written) if options.mode == "agent" else "nop"
     print(f"{len(written)} task(s) written; run them with: harbor run -p {options.output_dir} -a {agent}")
     return EXIT_OK
+
+
+# The simulhausen-harbor agent for each target type, with its required options; any other type
+# (or a mix) runs with the generic SimulhausenAgent.
+_HARBOR_AGENTS: Final = {
+    "agentos": "AgentOSAgent --ak base_url=...",
+    "openai-chat": "OpenAIChatAgent --ak base_url=...",
+    "a2a": "A2AAgent --ak url=...",
+    "langgraph": "LangGraphAgent --ak base_url=... --ak assistant_id=...",
+}
+
+
+def _harbor_agent_hint(task_dirs: list[Path]) -> str:
+    """The Harbor agent for agent-mode tasks, picked by the target type their scenarios name."""
+    kinds = {(load_scenarios(task / "environment" / "scenario.json")[0].target or {}).get("type") for task in task_dirs}
+    kind = kinds.pop() if len(kinds) == 1 else None
+    agent = _HARBOR_AGENTS.get(kind) if isinstance(kind, str) else None
+    return f"simulhausen_harbor:{agent or 'SimulhausenAgent --ak target=...'}"
 
 
 # -- parser --------------------------------------------------------------------
@@ -232,20 +252,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--org", default=DEFAULT_ORG, help="Harbor task names are ORG/<id> (default: %(default)s)"
     )
     export_parser.add_argument("--simulhausen-spec", metavar="REQ", help="pip requirement for simulhausen in the image")
+    # One value per flag, repeated: a flag taking several values would swallow the scenario files after it.
     export_parser.add_argument(
-        "--pip", action="extend", nargs="+", metavar="REQ", help="extra requirements for the image (default: openai)"
+        "--pip", action="append", metavar="REQ", help="extra requirement for the image, repeatable (default: openai)"
     )
     export_parser.add_argument(
         "--env",
-        action="extend",
-        nargs="+",
+        action="append",
         metavar="NAME",
-        help="host variables the verifier gets (default: OPENAI_API_KEY)",
+        help="host variable the verifier gets, repeatable (default: OPENAI_API_KEY)",
     )
     export_parser.add_argument("--compose", type=Path, metavar="FILE", help="docker-compose.yaml for the task")
     export_parser.add_argument("--agent-timeout", type=float, metavar="SEC")
     export_parser.add_argument("--verifier-timeout", type=float, metavar="SEC")
-    export_parser.add_argument("--ids", action="extend", nargs="+", metavar="ID", help="export only these scenarios")
+    export_parser.add_argument("--ids", action="append", metavar="ID", help="export only this scenario, repeatable")
     export_parser.add_argument("--overwrite", action="store_true", help="replace task directories export wrote before")
     _reward_arguments(export_parser)
     export_parser.set_defaults(handler=_cmd_export)

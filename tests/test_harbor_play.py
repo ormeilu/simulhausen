@@ -1,13 +1,22 @@
+import asyncio
 from typing import Any, cast
 
 import pytest
 from agno.models.base import Model
 from harbor_support import TARGET, ScriptedSimulator, goal_reached
 
-from simulhausen import SimulationStructuredOutputError, UserSimulatorAgent, collector
+from simulhausen import (
+    AgentAdapter,
+    AgentInput,
+    SimulationStructuredOutputError,
+    UserSimulatorAgent,
+    collector,
+    function_adapter,
+)
 from simulhausen.harbor import ConfigError, ScenarioSpec
 from simulhausen.harbor import play as play_module
 from simulhausen.harbor.play import build_simulator, play
+from simulhausen.harbor.transcript import Transcript
 
 
 def _spec(script: list[dict[str, Any]] | None = None, **fields: Any) -> ScenarioSpec:
@@ -167,6 +176,42 @@ async def test_an_error_of_the_agent_under_test_is_recorded(no_simulator: None) 
     assert transcript.error == "RuntimeError: agent crashed on 'explode'"
     assert transcript.turns == 1
     assert len(transcript.messages) == 3
+
+
+def hanging_agent() -> AgentAdapter:
+    """A python target that never answers a message containing "hang", like an agent that stalls."""
+
+    async def reply(agent_input: AgentInput) -> str:
+        if "hang" in agent_input.last_new_user_message_str():
+            await asyncio.Event().wait()
+        return "ok"
+
+    return function_adapter(reply)
+
+
+async def test_an_interrupted_dialogue_keeps_what_was_played(no_simulator: None) -> None:
+    spec = _spec([{"user": "hello"}, {"agent": True}, {"user": "hang"}, {"agent": True}])
+    partial: list[Transcript] = []
+    stalled = asyncio.Event()
+
+    def progress(transcript: Transcript) -> None:
+        partial.append(transcript)
+        if len(transcript.messages) == 3:
+            stalled.set()
+
+    target = {"type": "python", "factory": "test_harbor_play:hanging_agent"}
+    task = asyncio.create_task(play(spec, target, on_progress=progress))
+    await asyncio.wait_for(stalled.wait(), timeout=5)
+    # Until play returns, every step leaves a transcript marked as unfinished (a kill keeps that one).
+    assert partial[-1].harness_error
+    assert partial[-1].error == "play did not finish: stopped (killed or timed out) after 3 message(s)"
+    task.cancel()  # what SIGINT does to asyncio.run, e.g. through play_timeout_sec
+    transcript = await task
+
+    assert transcript.harness_error
+    assert transcript.stop_reason == "harness_error"
+    assert transcript.error == "interrupted (SIGINT or timeout) before the dialogue finished"
+    assert [m.content for m in transcript.messages] == ["hello", "ok", "hang"]
 
 
 async def test_configuration_errors_raise_before_anything_is_played() -> None:

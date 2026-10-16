@@ -17,6 +17,7 @@ people.
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING, Any, Final, Literal, Self
 
 from agno.models.message import MessageReferences
@@ -356,8 +357,12 @@ def transcript_markdown(transcript: Transcript, outcome: str | None = None) -> s
 
 
 def write_json(path: Path, payload: object) -> None:
+    """Write ``payload`` as JSON, atomically: play rewrites its transcript after every step,
+    and a kill in the middle of a write must leave the previous version, not half of one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    os.replace(partial, path)
 
 
 def write_play_outputs(out_dir: Path, transcript: Transcript) -> None:

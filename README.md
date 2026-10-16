@@ -564,8 +564,8 @@ simulhausen harbor judge  --scenario PATH [--id ID] [--transcript PATH] [--model
 simulhausen harbor run    --scenario PATH [--id ID] [--target-json JSON | --target-file PATH] [--model M] [--out DIR]
                           [--rewards ...] [--warn-reward ...]
 simulhausen harbor export SCENARIO_FILE... --output-dir DIR [--mode agent|verifier] [--org ORG]
-                          [--simulhausen-spec REQ] [--pip REQ ...] [--env NAME ...] [--compose FILE]
-                          [--agent-timeout SEC] [--verifier-timeout SEC] [--ids ID ...] [--overwrite]
+                          [--simulhausen-spec REQ] [--pip REQ]... [--env NAME]... [--compose FILE]
+                          [--agent-timeout SEC] [--verifier-timeout SEC] [--ids ID]... [--overwrite]
                           [--rewards ...] [--warn-reward ...]
 ```
 
@@ -634,14 +634,17 @@ Models are agno model strings, `"<provider>:<model_id>"`. The simulator takes `-
 `--model`, then `SIMULHAUSEN_JUDGE_MODEL`, then `SIMULHAUSEN_MODEL`, then `judge_model`. An empty variable
 counts as unset. The provider's SDK (`openai`, `anthropic`...) must be installed in the image (`export --pip`);
 a missing one is reported by name. A model is built only when needed: a fully scripted dialogue needs no
-simulator model, and a scenario graded only by checks needs no judge model.
+simulator model, and a scenario graded only by checks needs no judge model. In agno 3, `openai:<id>` is the
+Responses API; for a server that only speaks Chat Completions (vLLM, LiteLLM, most gateways) use
+`openai-chat:<id>` and pass `OPENAI_BASE_URL` along with the key (`export --env OPENAI_BASE_URL` for the
+verifier, `--ae OPENAI_BASE_URL=...` for the agent phase).
 
 Harbor does not copy your shell's variables into the container:
 
 - the verifier gets what `task.toml`'s `[verifier.env]` names: every `export --env NAME` (default
   `OPENAI_API_KEY`) as `NAME = "${NAME}"`, plus `SIMULHAUSEN_JUDGE_MODEL` and `SIMULHAUSEN_MODEL` when the host
   has them (verifier mode adds `SIMULHAUSEN_SIMULATOR_MODEL` and `SIMULHAUSEN_TARGET`). In verifier mode, list
-  the target's variables (`--env OPENAI_API_KEY AGENTOS_API_KEY`) too;
+  the target's variables (`--env OPENAI_API_KEY --env AGENTOS_API_KEY`) too;
 - the agent phase gets what `harbor run --ae NAME=value` passes, such as the simulator's key and the target's
   `*_env` variables;
 - a sidecar from `docker-compose.yaml` gets variables through `${NAME}` interpolation in that file.

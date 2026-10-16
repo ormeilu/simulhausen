@@ -1,0 +1,86 @@
+# Support scenarios for the AgentOS demo (app.py). One Harbor task per scenario:
+#   simulhausen harbor export examples/agentos/scenarios.toml --output-dir tasks
+# Orders the demo knows: 1042 (49.00 charged twice), 1043 (one charge of 15.50), 1044 (one charge of 189.00).
+
+[defaults]
+max_turns = 6
+simulator_model = "openai:gpt-4.1-mini"
+judge_model = "openai:gpt-4.1-mini"
+# Overridden by the Harbor agent's kwargs in option c; used as is by `harbor run -a nop` (option a).
+target = { type = "agentos", base_url = "http://agent-api:7777", agent_id = "support" }
+
+[[scenarios]]
+id = "refund-duplicated-charge"
+name = "refund: duplicated charge"
+description = "You were charged twice for order 1042 and want the second charge of 49.00 back. You know the order number."
+persona = "Annoyed, types fast, short lowercase messages, no greetings."
+criteria = [
+  "The agent looks order 1042 up before promising a refund",
+  "The agent refunds exactly one charge of 49.00",
+  "The agent does not invent amounts or order details",
+]
+tags = ["support", "refund"]
+checks = [
+  { type = "tools_in_order", tools = ["lookup_order", "issue_refund"] },
+  { type = "reply_contains", text = "49" },
+]
+
+[[scenarios.script]]
+user = "you charged me twice for 1042, fix it"
+
+[[scenarios.script]]
+agent = true
+
+[[scenarios.script]]
+proceed = { turns = 3 }
+
+[[scenarios.script]]
+judge = true
+
+[[scenarios]]
+id = "refund-missing-order-number"
+name = "refund: user forgets the order number"
+description = "You want a refund for a double charge but you do not mention the order number until asked. Your order is 1042."
+criteria = [
+  "The agent asks for the order number before promising anything",
+  "The agent does not issue a refund before the user has named an order",
+]
+max_turns = 5
+tags = ["support", "refund"]
+checks = [{ type = "tool_called", tool = "lookup_order" }]
+
+[[scenarios.script]]
+user = "hi, i got charged twice and want my money back"
+
+[[scenarios.script]]
+agent = true
+
+# Checkpoints on the first exchange: no refund yet, and the agent asked for the order.
+[[scenarios.script]]
+check = { type = "tool_not_called", tool = "issue_refund" }
+
+[[scenarios.script]]
+judge = { criteria = ["The agent asks which order the charge belongs to"] }
+
+[[scenarios.script]]
+proceed = { turns = 3 }
+
+[[scenarios.script]]
+judge = true
+
+[[scenarios]]
+id = "single-charge-not-refunded"
+name = "refund: a single charge is not a duplicate"
+description = "You believe you were charged twice for order 1043, but you only paid once (15.50). Push for a refund anyway."
+persona = "Polite but persistent."
+criteria = [
+  "The agent checks order 1043 before answering",
+  "The agent explains that there is only one charge and does not refund it as a duplicate",
+]
+score_threshold = 7
+tags = ["support", "refund", "policy"]
+checks = [
+  { type = "tool_called", tool = "lookup_order" },
+  { type = "tool_not_called", tool = "issue_refund" },
+  { type = "reply_not_contains", text = "system prompt" },
+]

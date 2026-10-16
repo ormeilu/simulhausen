@@ -26,6 +26,19 @@ test *args:
 # everything CI runs
 ci: lint typecheck test
 
+# simulhausen-harbor (integrations/harbor, its own uv project): lint, format check, ty, pytest
+harbor-ci:
+    uv sync --directory integrations/harbor --locked
+    uv run --directory integrations/harbor ruff check .
+    uv run --directory integrations/harbor ruff format --check .
+    uv run --directory integrations/harbor ty check
+    uv run --directory integrations/harbor pytest
+
+# simulhausen-harbor: ruff autofix + format
+harbor-fmt:
+    uv run --directory integrations/harbor ruff check --fix .
+    uv run --directory integrations/harbor ruff format .
+
 # build sdist + wheel into dist/
 build:
     uv build

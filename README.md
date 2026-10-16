@@ -467,7 +467,8 @@ commands only read and write files where Harbor expects them.
 There are two ways to run a task:
 
 - **Agent mode** (the default). Harbor's agent is your agent under test. A Harbor agent from the separate
-  `simulhausen-harbor` package (`-a simulhausen_harbor:AgentOSAgent` and friends) runs `simulhausen harbor play`
+  [`simulhausen-harbor`](https://github.com/ormeilu/simulhausen/tree/main/integrations/harbor) package
+  (`-a simulhausen_harbor:AgentOSAgent` and friends) runs `simulhausen harbor play`
   in the task container: the user simulator talks to your agent and the dialogue lands in
   `/logs/agent/simulhausen/`. The verifier then runs `simulhausen harbor judge`, which grades the dialogue and
   writes the reward. The criteria reach the container only with the verifier's files, never during the dialogue.
@@ -632,7 +633,9 @@ harbor run -p tasks -a simulhausen_harbor:AgentOSAgent --ak base_url=http://agen
 ```
 
 Harbor groups results by agent, model and dataset, and an agent class has one fixed name, so `-m` is where the
-agent under test gets its label (`support-agent@v3`).
+agent under test gets its label (`support-agent@v3`). The agent classes, their options, the pass-rate metric
+and a runnable AgentOS example with a sidecar overlay are described in
+[`integrations/harbor`](https://github.com/ormeilu/simulhausen/tree/main/integrations/harbor).
 
 In verifier mode, `harbor run -p tasks -a nop --extra-docker-compose agentos-sidecar.yaml -y`.
 

@@ -19,7 +19,7 @@ refund a single charge.
 - Harbor with this package: `uv tool install harbor --with "simulhausen-harbor @
   git+https://github.com/ormeilu/simulhausen#subdirectory=integrations/harbor"`.
 - simulhausen on the host for the export: `uv tool install simulhausen` (0.3.0 or later; until then
-  `uv tool install "simulhausen @ git+https://github.com/ormeilu/simulhausen@main"`).
+  `uv tool install "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"`).
 
 Run every command from `integrations/harbor`.
 
@@ -39,8 +39,8 @@ simulhausen harbor export examples/agentos/scenarios.toml --output-dir tasks
 ```
 
 One directory per scenario: `tasks/refund-duplicated-charge/`, `tasks/refund-missing-order-number/`,
-`tasks/single-charge-not-refunded/`. With simulhausen from git, add
-`--simulhausen-spec "simulhausen @ git+https://github.com/ormeilu/simulhausen@main"` so the task images install
+`tasks/single-charge-not-refunded/`. With simulhausen installed from source, add
+`--simulhausen-spec "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"` so the task images install
 the same version.
 
 ## 3. Run it (option c)

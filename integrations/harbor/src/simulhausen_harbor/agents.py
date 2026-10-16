@@ -125,7 +125,7 @@ class SimulhausenOptions(InstalledAgentOptions):
         default=None,
         description=(
             "pip requirement installed when the image has no simulhausen CLI, e.g. "
-            '"simulhausen @ git+https://github.com/ormeilu/simulhausen@main". '
+            '"simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz". '
             f"Default: {DEFAULT_SIMULHAUSEN_SPEC}, or simulhausen==<version> when version is set."
         ),
     )
@@ -380,9 +380,14 @@ class SimulhausenAgent(BaseInstalledAgent):
 
     async def _install_cli(self, environment: BaseEnvironment) -> None:
         has_uv = (await environment.exec(command="command -v uv", user="root")).return_code == 0
+        packages: list[str] = []
         if not has_uv:
             # The installer needs curl and CA certificates; slim images have neither.
-            await self.ensure_system_dependencies(environment, ("curl", "ca_certificates"))
+            packages += ["curl", "ca_certificates"]
+        if any("git+" in requirement for requirement in [self.simulhausen_spec, *self.simulhausen_options.pip]):
+            # uv needs the git executable for a git+ requirement, and slim images have none.
+            packages.append("git")
+        await self.ensure_system_dependencies(environment, tuple(packages))
         log = PurePosixPath(self.environment_logs_dir) / "setup" / INSTALL_LOG_FILE
         script = self.install_script(install_uv=not has_uv)
         await self.exec_as_root(

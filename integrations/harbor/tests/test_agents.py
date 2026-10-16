@@ -134,6 +134,7 @@ async def test_setup_fetches_uv_when_missing(make_agent: MakeAgent, environment:
     environment.answer("command -v simulhausen", MISSING)
     environment.answer("command -v uv", MISSING)
     environment.answer("command -v curl >/dev/null 2>&1", MISSING)
+    environment.answer("command -v git >/dev/null 2>&1", MISSING)
     environment.answer("apt-get", found("apt-get"), contains=True)
     agent = make_agent(
         SimulhausenAgent,
@@ -147,6 +148,8 @@ async def test_setup_fetches_uv_when_missing(make_agent: MakeAgent, environment:
     assert len(packages) == 1
     assert "curl" in packages[0].command
     assert "ca-certificates" in packages[0].command
+    # A git+ requirement needs the git executable, which slim images lack.
+    assert " git" in packages[0].command
     install = next(c for c in environment.calls if "uv tool install" in c.command)
     assert install.user == "root"
     assert (
@@ -157,6 +160,21 @@ async def test_setup_fetches_uv_when_missing(make_agent: MakeAgent, environment:
         "/usr/local/bin/uv tool install --python '>=3.12' "
         "'simulhausen @ git+https://github.com/ormeilu/simulhausen@main' --with openai --with 'anthropic>=0.40'"
     ) in install.command
+
+
+async def test_setup_installs_git_for_a_git_requirement(make_agent: MakeAgent, environment: FakeEnvironment):
+    environment.answer("command -v simulhausen", MISSING)
+    environment.answer("command -v uv", found("/usr/bin/uv\n"))
+    environment.answer("command -v git >/dev/null 2>&1", MISSING)
+    environment.answer("apt-get", found("apt-get"), contains=True)
+    agent = make_agent(SimulhausenAgent, pip=["openai", "tools @ git+https://example.com/tools.git"])
+
+    await agent.setup(environment)
+
+    packages = [c for c in environment.calls if "apt-get install" in c.command]
+    assert len(packages) == 1
+    assert " git" in packages[0].command
+    assert "curl" not in packages[0].command
 
 
 async def test_install_failure_fails_setup(make_agent: MakeAgent, environment: FakeEnvironment):

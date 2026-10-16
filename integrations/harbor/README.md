@@ -30,13 +30,13 @@ uv tool install harbor --with "simulhausen-harbor @ git+https://github.com/ormei
 
 Inside the container, exported task images already have the `simulhausen` CLI. If the image lacks it, the agent
 installs `simulhausen==0.3.0` plus `openai` with uv during setup (`simulhausen_spec`, `version` and `pip` change
-that). simulhausen 0.3.0 is the first release with the Harbor CLI; until it is out, use a git ref both when
-exporting and in the agent:
+that). simulhausen 0.3.0 is the first release with the Harbor CLI; until it is out, install it from a source
+archive both when exporting and in the agent (a `git+` URL works too, but the slim images then need git first):
 
 ```bash
 simulhausen harbor export scenarios.toml --output-dir tasks \
-  --simulhausen-spec "simulhausen @ git+https://github.com/ormeilu/simulhausen@main"
-harbor run ... --ak 'simulhausen_spec=simulhausen @ git+https://github.com/ormeilu/simulhausen@main'
+  --simulhausen-spec "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"
+harbor run ... --ak 'simulhausen_spec=simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz'
 ```
 
 ## Option c: the agent under test is the Harbor agent
@@ -170,7 +170,8 @@ metrics:
 
 It reports `pass_rate` (PASS / (PASS + FAIL), 0-1), `n_pass`, `n_fail`, `n_warn`, and the mean of every other
 numeric reward key over the trials that have it (`judge_score`, `criteria_pass_rate`, `criterion_<n>` with
-`--rewards detailed`). It replaces Harbor's default mean in that job. Outside a checkout, download the single file
+`--rewards detailed`). `criterion_<n>` and `check_<n>` are numbered within each scenario, so their means mean
+something only across trials of the same task (`-k`), not across a dataset of different scenarios. It replaces Harbor's default mean in that job. Outside a checkout, download the single file
 from the repository. It also runs as `python -m simulhausen_harbor.metric -i rewards.jsonl [-o metric.json]`.
 
 ## Caveats

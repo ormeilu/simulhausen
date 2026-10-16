@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from agno.agent import Agent
 from agno.run.agent import RunOutput
+from agno.run.base import RunStatus
 from agno.scorer.judge import JudgeScorer
 from pydantic import BaseModel, Field
 
@@ -59,12 +60,16 @@ def _fence(label: str, text: str) -> str:
 
 async def _arun_structured[T](agent: Agent, prompt: str, schema: type[T], *, scenario: str, what: str) -> T:
     """Run the agent and demand a schema object; retry with a format nudge if it is not one."""
+    model_error: str | None = None
     for attempt in range(1, STRUCTURED_ATTEMPTS + 1):
         attempt_prompt = prompt if attempt == 1 else prompt + STRUCTURED_RETRY_NUDGE
         response = await agent.arun(attempt_prompt)
         content = response.content
         if isinstance(content, schema):
             return content
+        # agno reports a failed model call (no API key, unreachable endpoint, HTTP error) as an
+        # errored run whose content is the error message: keep it for the final error.
+        model_error = str(content) if getattr(response, "status", None) == RunStatus.error else None
         logger.warning(
             "%s returned %s instead of %s (scenario %r, attempt %d/%d)",
             what,
@@ -74,8 +79,9 @@ async def _arun_structured[T](agent: Agent, prompt: str, schema: type[T], *, sce
             attempt,
             STRUCTURED_ATTEMPTS,
         )
+    detail = f"; the model call failed: {model_error}" if model_error else ""
     raise SimulationStructuredOutputError(
-        f"{what} returned no structured output in {STRUCTURED_ATTEMPTS} attempts (scenario {scenario!r})"
+        f"{what} returned no structured output in {STRUCTURED_ATTEMPTS} attempts (scenario {scenario!r}){detail}"
     )
 
 

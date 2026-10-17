@@ -178,8 +178,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-# The simulhausen-harbor agent for each target type, with its required options; any other type
-# (or a mix) runs with the generic SimulhausenAgent.
+# The Harbor agent (simulhausen.harbor.agents) for each target type, with its required options;
+# any other type (or a mix) runs with the generic SimulhausenAgent.
 _HARBOR_AGENTS: Final = {
     "agentos": "AgentOSAgent --ak base_url=...",
     "openai-chat": "OpenAIChatAgent --ak base_url=...",
@@ -193,7 +193,7 @@ def _harbor_agent_hint(task_dirs: list[Path]) -> str:
     kinds = {(load_scenarios(task / "environment" / "scenario.json")[0].target or {}).get("type") for task in task_dirs}
     kind = kinds.pop() if len(kinds) == 1 else None
     agent = _HARBOR_AGENTS.get(kind) if isinstance(kind, str) else None
-    return f"simulhausen_harbor:{agent or 'SimulhausenAgent --ak target=...'}"
+    return f"simulhausen.harbor:{agent or 'SimulhausenAgent --ak target=...'}"
 
 
 # -- parser --------------------------------------------------------------------

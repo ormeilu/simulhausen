@@ -10,8 +10,10 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
 - English everywhere: code, docstrings, prompts, reports, docs.
 - Python 3.12 is the floor and ty targets it, so 3.13+ stdlib APIs fail the gate. PEP 695 generics and `type`
   aliases are fine.
-- Runtime deps stay at agno, pydantic and rich. LangWatch, litellm and OpenTelemetry stay out: being local-only
-  is the point of the package.
+- Runtime deps stay at agno, pydantic and rich. LangWatch, litellm and OpenTelemetry stay out of a plain install:
+  being local-only is the point of the package. The one exception is the `harbor` extra (Harbor requires
+  litellm): only `simulhausen/harbor/agents.py` imports harbor, and `tests/test_harbor_agent_loading.py` checks
+  that a plain import loads neither.
 
 ## Tests
 

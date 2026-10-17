@@ -39,6 +39,12 @@ Repository = "https://github.com/ormeilu/simulhausen"
 Issues = "https://github.com/ormeilu/simulhausen/issues"
 Changelog = "https://github.com/ormeilu/simulhausen/blob/main/CHANGELOG.md"
 
+[project.optional-dependencies]
+# The Harbor agent classes (`-a simulhausen.harbor:AgentOSAgent`). Harbor depends on litellm, which a plain
+# install leaves out; only simulhausen/harbor/agents.py imports it. The agents subclass Harbor's
+# BaseInstalledAgent, whose constructor and exec helpers still move between minor releases.
+harbor = ["harbor>=0.24,<0.25"]
+
 # `simulhausen harbor play|judge|run|export`: scenarios as Harbor tasks.
 [project.scripts]
 simulhausen = "simulhausen.cli:main"
@@ -66,9 +72,13 @@ dev = [
 just = [
     "rust-just>=1.36.0,<2",
 ]
+# The harbor extra, so the Harbor agent tests run and ty checks simulhausen/harbor/agents.py.
+harbor = [
+    "simulhausen[harbor]",
+]
 
 [tool.uv]
-default-groups = ["dev", "just"]
+default-groups = ["dev", "just", "harbor"]
 
 [tool.ruff]
 line-length = 120

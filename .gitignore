@@ -22,3 +22,8 @@ reports/
 
 # Agent worktrees
 .worktrees/
+
+# Outputs of the examples/harbor/agentos walkthrough, which runs from the repository root.
+/tasks/
+/tasks-verifier/
+/jobs/

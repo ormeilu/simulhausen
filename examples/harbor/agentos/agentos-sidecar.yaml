@@ -1,0 +1,36 @@
+# Compose overlay for `harbor run --extra-docker-compose`: the agent under test as a sidecar named agent-api.
+#
+# Build the image first, from the repository root:
+#   docker build -t simulhausen-agentos-demo examples/harbor/agentos
+# A `build:` section would not work here: relative paths in an extra compose file resolve against the task's
+# environment/ directory, not against this file.
+#
+# The task container reaches the app at http://agent-api:7777. OPENAI_API_KEY, OPENAI_BASE_URL (any
+# OpenAI-compatible endpoint) and AGENT_MODEL are read from the shell that runs `harbor run` (docker provider).
+# Each trial gets its own copy of this service.
+services:
+  agent-api:
+    image: simulhausen-agentos-demo:latest
+    pull_policy: never
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Not empty by default: the openai SDK would take an empty string as the base URL.
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - AGENT_MODEL=${AGENT_MODEL:-gpt-4.1-mini}
+    expose:
+      - "7777"
+    healthcheck:
+      # agno's AgentOS health route; the slim image has no curl.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7777/health', timeout=2).read()"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+  main:
+    depends_on:
+      agent-api:
+        condition: service_healthy

@@ -12,6 +12,7 @@ from agno.models.base import Model
 from agno.models.message import MessageReferences
 from agno.models.response import ModelResponse, ToolExecution
 from agno.run.agent import RunOutput
+from agno.run.base import RunStatus
 from agno.scorer.base import Score
 from agno.tools.function import Function
 from pydantic import BaseModel
@@ -63,7 +64,9 @@ def agno(monkeypatch: pytest.MonkeyPatch) -> AgnoRecorder:
             recorder.prompts.append(prompt)
             if recorder.on_run is not None:
                 recorder.on_run(self.kwargs)
-            return SimpleNamespace(content=recorder.responses.pop(0))
+            response = recorder.responses.pop(0)
+            # A SimpleNamespace is a whole run output (status included); anything else is its content.
+            return response if isinstance(response, SimpleNamespace) else SimpleNamespace(content=response)
 
     recorder.agent_class = FakeAgent
     monkeypatch.setattr("simulhausen.agents.Agent", FakeAgent)
@@ -150,6 +153,18 @@ async def test_arun_structured_gives_up_after_three_attempts(agno: AgnoRecorder)
 
     assert len(agno.prompts) == STRUCTURED_ATTEMPTS == 3
     assert agno.prompts[1:] == ["prompt" + STRUCTURED_RETRY_NUDGE] * 2
+
+
+async def test_arun_structured_names_the_failed_model_call(agno: AgnoRecorder) -> None:
+    failed = SimpleNamespace(content="OPENAI_API_KEY not set.", status=RunStatus.error)
+    agno.responses = [failed, failed, failed]
+
+    with pytest.raises(
+        sim.SimulationStructuredOutputError,
+        match=r"user simulator returned no structured output in 3 attempts \(scenario 's'\); "
+        r"the model call failed: OPENAI_API_KEY not set\.",
+    ):
+        await _arun_structured(agno.agent(), "prompt", UserTurn, scenario="s", what="user simulator")
 
 
 # -- user simulator -----------------------------------------------------------

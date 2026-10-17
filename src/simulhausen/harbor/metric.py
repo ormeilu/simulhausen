@@ -24,7 +24,8 @@ per line. Output keys:
   Missing keys are skipped, not counted as 0: ``--rewards detailed`` omits inconclusive criteria on purpose.
 
 Standard library only (PEP 723 header above), so it also runs as ``python metric.py`` or
-``python -m simulhausen_harbor.metric -i rewards.jsonl -o metric.json``; without ``-o`` it prints the result.
+``python -m simulhausen.harbor.metric -i rewards.jsonl -o metric.json``; without ``-o`` it prints the result.
+It imports nothing from simulhausen: Harbor runs it by path, outside any environment that has the package.
 """
 
 import argparse

@@ -1,15 +1,15 @@
-# Harbor job for the AgentOS demo (option c). Paths are relative to integrations/harbor, where you run:
-#   simulhausen harbor export examples/agentos/scenarios.toml --output-dir tasks
-#   harbor run -c examples/agentos/job.yaml -y
+# Harbor job for the AgentOS demo (agent mode). Paths are relative to the repository root, where you run:
+#   simulhausen harbor export examples/harbor/agentos/scenarios.toml --output-dir tasks
+#   harbor run -c examples/harbor/agentos/job.yaml -y
 job_name: support-agent-v1
 n_attempts: 1
 n_concurrent_trials: 2
 environment:
   type: docker
   extra_docker_compose:
-    - examples/agentos/agentos-sidecar.yaml
+    - examples/harbor/agentos/agentos-sidecar.yaml
 agents:
-  - import_path: simulhausen_harbor:AgentOSAgent
+  - import_path: simulhausen.harbor:AgentOSAgent
     # The agent under test's identity: results are grouped by agent__model__dataset.
     model_name: support-agent@v1
     kwargs:
@@ -22,6 +22,7 @@ datasets:
   - path: tasks
 metrics:
   # pass_rate = PASS / (PASS + FAIL): trials without a reward (WARN) are left out instead of counting as 0.
+  # Outside a checkout, download src/simulhausen/harbor/metric.py and point script_path at your copy.
   - type: uv-script
     kwargs:
-      script_path: src/simulhausen_harbor/metric.py
+      script_path: src/simulhausen/harbor/metric.py

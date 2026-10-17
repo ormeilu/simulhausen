@@ -1,4 +1,7 @@
-"""SimulhausenAgent and the protocol subclasses against a recording environment: install, play, context."""
+"""The Harbor agents (SimulhausenAgent and the protocol subclasses) against a recording environment.
+
+No container, no network: install, play and the context summary run against ``FakeEnvironment``.
+"""
 
 import json
 import logging
@@ -11,19 +14,23 @@ from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.options import InstalledAgentOptions
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
-from harbor.models.trial.paths import EnvironmentPaths
-from support import FakeEnvironment, write_json
+from harbor.models.task.config import EnvironmentConfig
+from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
+from harbor_agent_support import FakeEnvironment, write_json
 
-from simulhausen_harbor import (
-    DEFAULT_SIMULHAUSEN_SPEC,
-    SIMULHAUSEN_VERSION,
+import simulhausen
+from simulhausen.harbor import export as export_module
+from simulhausen.harbor.agents import (
+    TARGET_FILE,
     A2AAgent,
     AgentOSAgent,
     LangGraphAgent,
     OpenAIChatAgent,
     SimulhausenAgent,
+    parse_version,
+    summarize_transcript,
 )
-from simulhausen_harbor.agents import TARGET_FILE, parse_version, summarize_transcript
+from simulhausen.harbor.export import UV_VERSION, default_simulhausen_spec
 
 MakeAgent = Callable[..., SimulhausenAgent]
 
@@ -34,6 +41,41 @@ MISSING = ExecResult(stdout="", stderr="", return_code=1)
 
 def found(stdout: str) -> ExecResult:
     return ExecResult(stdout=stdout, stderr="", return_code=0)
+
+
+@pytest.fixture(autouse=True)
+def _no_harbor_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARBOR_TELEMETRY", "0")
+
+
+@pytest.fixture
+def environment(tmp_path: Path) -> FakeEnvironment:
+    trial_paths = TrialPaths(trial_dir=tmp_path / "trial")
+    trial_paths.mkdir()
+    return FakeEnvironment(
+        environment_dir=tmp_path / "environment",
+        environment_name="refund-duplicated-charge",
+        session_id="refund-duplicated-charge__abc1234__env",
+        trial_paths=trial_paths,
+        task_env_config=EnvironmentConfig(),
+    )
+
+
+@pytest.fixture
+def logs_dir(tmp_path: Path) -> Path:
+    path = tmp_path / "agent-logs"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def make_agent(logs_dir: Path) -> MakeAgent:
+    """Build an agent the way Harbor's AgentFactory does: keyword arguments only."""
+
+    def build(cls: type[SimulhausenAgent], model_name: str | None = None, **kwargs: Any) -> SimulhausenAgent:
+        return cls(logs_dir=logs_dir, model_name=model_name, **kwargs)
+
+    return build
 
 
 # --- identity ---------------------------------------------------------------------------------------------------
@@ -59,10 +101,22 @@ def test_names_are_fixed_per_class(make_agent: MakeAgent, cls: type[SimulhausenA
     assert info.model_info.name == "support-agent@v1"
 
 
-def test_version_defaults_to_the_pinned_release(make_agent: MakeAgent):
+def test_version_defaults_to_the_simulhausen_installed_here(make_agent: MakeAgent):
+    # The same requirement `simulhausen harbor export` bakes into task images.
     agent = make_agent(SimulhausenAgent)
-    assert agent.version() == SIMULHAUSEN_VERSION
-    assert agent.simulhausen_spec == DEFAULT_SIMULHAUSEN_SPEC
+    assert agent.simulhausen_spec == default_simulhausen_spec() == f"simulhausen=={simulhausen.__version__}"
+    assert agent.version() == simulhausen.__version__
+
+
+def test_unreleased_version_installs_the_latest_release(
+    make_agent: MakeAgent, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(export_module, "__version__", "0+unknown")
+    with caplog.at_level(logging.WARNING):
+        agent = make_agent(SimulhausenAgent)
+    assert agent.simulhausen_spec == "simulhausen"
+    assert agent.version() is None
+    assert "Pass --ak simulhausen_spec=... to pin one" in caplog.text
 
 
 def test_version_kwarg_selects_the_release_to_install(make_agent: MakeAgent):
@@ -124,7 +178,7 @@ async def test_setup_installs_with_existing_uv(make_agent: MakeAgent, environmen
         PIPEFAIL + "mkdir -p /logs/agent/setup && { "
         "env UV_TOOL_DIR=/opt/simulhausen/tools UV_TOOL_BIN_DIR=/usr/local/bin "
         "UV_PYTHON_INSTALL_DIR=/opt/simulhausen/python uv tool install --python '>=3.12' "
-        f"{DEFAULT_SIMULHAUSEN_SPEC} --with openai && /usr/local/bin/simulhausen --version"
+        f"simulhausen=={simulhausen.__version__} --with openai && /usr/local/bin/simulhausen --version"
         "; } 2>&1 | tee /logs/agent/setup/simulhausen-install.log"
     )
     assert environment.commands[4:] == ["simulhausen --version"]
@@ -153,8 +207,8 @@ async def test_setup_fetches_uv_when_missing(make_agent: MakeAgent, environment:
     install = next(c for c in environment.calls if "uv tool install" in c.command)
     assert install.user == "root"
     assert (
-        "curl -LsSf https://astral.sh/uv/0.12.21/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh"
-        in install.command
+        f"curl -LsSf https://astral.sh/uv/{UV_VERSION}/install.sh"
+        " | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh" in install.command
     )
     assert (
         "/usr/local/bin/uv tool install --python '>=3.12' "
@@ -202,7 +256,7 @@ async def test_version_detection_is_best_effort(
 
     await agent.setup(environment)
 
-    assert agent.version() == SIMULHAUSEN_VERSION
+    assert agent.version() == simulhausen.__version__
 
 
 # --- run --------------------------------------------------------------------------------------------------------
@@ -268,7 +322,7 @@ async def test_play_timeout_runs_inside_the_container(make_agent: MakeAgent, env
     assert (
         "if command -v timeout >/dev/null 2>&1; then timeout -s INT -k 30 91 simulhausen harbor play "
         "--scenario /simulhausen/scenario.json --out /logs/agent/simulhausen; else echo "
-        "'simulhausen-harbor: timeout(1) not found in the container; play_timeout_sec is ignored' >&2; "
+        "'simulhausen: timeout(1) not found in the container; play_timeout_sec is ignored' >&2; "
         "simulhausen harbor play --scenario /simulhausen/scenario.json --out /logs/agent/simulhausen; fi"
     ) in play.command
 
@@ -616,7 +670,7 @@ def test_trajectory_copy_failure_is_only_logged(
     def deny(*args: object) -> None:
         raise PermissionError("read-only")
 
-    monkeypatch.setattr("simulhausen_harbor.agents.shutil.copyfile", deny)
+    monkeypatch.setattr("simulhausen.harbor.agents.shutil.copyfile", deny)
     with caplog.at_level(logging.WARNING):
         make_agent(SimulhausenAgent).populate_context_post_run(AgentContext())
     assert "could not copy" in caplog.text

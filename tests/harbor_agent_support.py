@@ -1,7 +1,8 @@
-"""Test doubles for Harbor: a recording environment that never starts a container.
+"""Test doubles for the Harbor agent tests: a recording environment that never starts a container.
 
 ``FakeEnvironment`` is a real ``BaseEnvironment`` subclass, so Harbor's own env merging (``--ae`` overlays) and
-default-user handling apply; ``exec`` and ``upload_file`` only record calls and answer from a script.
+default-user handling apply; ``exec`` and ``upload_file`` only record calls and answer from a script. Kept apart from
+``harbor_support``, which the container-side tests use and which imports nothing from Harbor.
 """
 
 import json

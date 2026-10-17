@@ -10,23 +10,25 @@ refund a single charge.
 | `app.py`, `Dockerfile` | The AgentOS app (port 7777, `GET /health`, `POST /agents/support/runs`) and its image |
 | `agentos-sidecar.yaml` | Compose overlay for `--extra-docker-compose`: service `agent-api`, healthcheck, `OPENAI_API_KEY` |
 | `scenarios.toml` | Scenarios in simulhausen's scenario-file format, one Harbor task each |
-| `job.yaml` | The option c run as a Harbor job config, with the pass-rate metric |
+| `job.yaml` | The agent-mode run as a Harbor job config, with the pass-rate metric |
 
 ## Prerequisites
 
 - Docker (Harbor's default `docker` provider runs the sidecar), uv, and an OpenAI API key. The simulator, the
   judge and the demo agent all use `gpt-4.1-mini`.
-- Harbor with this package: `uv tool install harbor --with "simulhausen-harbor @
-  git+https://github.com/ormeilu/simulhausen#subdirectory=integrations/harbor"`.
-- simulhausen on the host for the export: `uv tool install simulhausen` (0.3.0 or later; until then
-  `uv tool install "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"`).
+- Harbor with simulhausen's Harbor agents: `uv tool install harbor --with 'simulhausen[harbor]'`.
+- simulhausen on the host for the export: `uv tool install simulhausen`.
 
-Run every command from `integrations/harbor`.
+Both need simulhausen 0.3.0 or later. Until it is out, install from a source archive instead:
+`uv tool install harbor --with "simulhausen[harbor] @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"`
+and `uv tool install "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"`.
+
+Run every command from the repository root.
 
 ## 1. Build the agent under test
 
 ```bash
-docker build -t simulhausen-agentos-demo examples/agentos
+docker build -t simulhausen-agentos-demo examples/harbor/agentos
 ```
 
 The overlay uses this image instead of a `build:` section, because relative build paths in an extra compose file
@@ -35,7 +37,7 @@ resolve against the task's `environment/` directory, not against the overlay.
 ## 2. Export the scenarios as Harbor tasks
 
 ```bash
-simulhausen harbor export examples/agentos/scenarios.toml --output-dir tasks
+simulhausen harbor export examples/harbor/agentos/scenarios.toml --output-dir tasks
 ```
 
 One directory per scenario: `tasks/refund-duplicated-charge/`, `tasks/refund-missing-order-number/`,
@@ -43,14 +45,14 @@ One directory per scenario: `tasks/refund-duplicated-charge/`, `tasks/refund-mis
 `--simulhausen-spec "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"` so the task images install
 the same version.
 
-## 3. Run it (option c)
+## 3. Run it (agent mode)
 
 ```bash
 export OPENAI_API_KEY=sk-...
 harbor run -p tasks \
-  -a simulhausen_harbor:AgentOSAgent --ak base_url=http://agent-api:7777 --ak agent_id=support \
+  -a simulhausen.harbor:AgentOSAgent --ak base_url=http://agent-api:7777 --ak agent_id=support \
   -m support-agent@v1 \
-  --extra-docker-compose examples/agentos/agentos-sidecar.yaml \
+  --extra-docker-compose examples/harbor/agentos/agentos-sidecar.yaml \
   --ae OPENAI_API_KEY=$OPENAI_API_KEY -y
 ```
 
@@ -61,15 +63,15 @@ After that, `tests/test.sh` runs `simulhausen harbor judge` on the transcript.
 The same run as a job config, plus the pass-rate metric:
 
 ```bash
-harbor run -c examples/agentos/job.yaml -y
+harbor run -c examples/harbor/agentos/job.yaml -y
 ```
 
-## 4. Or: everything in the verifier (option a)
+## 4. Or: everything in the verifier (verifier mode)
 
 ```bash
-simulhausen harbor export examples/agentos/scenarios.toml --output-dir tasks-verifier --mode verifier
+simulhausen harbor export examples/harbor/agentos/scenarios.toml --output-dir tasks-verifier --mode verifier
 harbor run -p tasks-verifier -a nop \
-  --extra-docker-compose examples/agentos/agentos-sidecar.yaml --job-name support-agent-v1 -y
+  --extra-docker-compose examples/harbor/agentos/agentos-sidecar.yaml --job-name support-agent-v1 -y
 ```
 
 `tests/test.sh` now runs `simulhausen harbor run`: play and judge in the verifier, against the target in
@@ -94,11 +96,12 @@ A trial without `reward.json` is a WARN: the harness broke (for example, the age
 or the judge found criteria inconclusive and none failed. `simulhausen-result.json` says which. Harbor lists these
 trials as errors; the metric in `job.yaml` leaves them out of `pass_rate` and counts them in `n_warn`.
 
-In option c, `harbor view jobs` shows each dialogue (play's trajectory) next to the rewards.
+In agent mode, `harbor view jobs` shows each dialogue (play's trajectory) next to the rewards.
 
 ## 6. Evaluate your own agent
 
 Build an image of your AgentOS app, point a copy of `agentos-sidecar.yaml` at it, and change the kwargs:
 `--ak agent_id=...`, or `--ak team_id=...`, and `--ak api_key_env=AGENTOS_API_KEY --ae AGENTOS_API_KEY=...` if it
 has a security key. Change `-m` with every version you evaluate, so Harbor keeps the results apart. For other
-protocols, use `OpenAIChatAgent`, `A2AAgent` or `LangGraphAgent` (see `../../README.md`).
+protocols, use `OpenAIChatAgent`, `A2AAgent` or `LangGraphAgent` (see the "Harbor" section of the
+[README](../../../README.md#harbor)).

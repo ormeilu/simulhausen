@@ -1,12 +1,12 @@
 # Support scenarios for the AgentOS demo (app.py). One Harbor task per scenario:
-#   simulhausen harbor export examples/agentos/scenarios.toml --output-dir tasks
+#   simulhausen harbor export examples/harbor/agentos/scenarios.toml --output-dir tasks
 # Orders the demo knows: 1042 (49.00 charged twice), 1043 (one charge of 15.50), 1044 (one charge of 189.00).
 
 [defaults]
 max_turns = 6
 simulator_model = "openai:gpt-4.1-mini"
 judge_model = "openai:gpt-4.1-mini"
-# Overridden by the Harbor agent's kwargs in option c; used as is by `harbor run -a nop` (option a).
+# Overridden by the Harbor agent's kwargs in agent mode; used as is by `harbor run -a nop` (verifier mode).
 target = { type = "agentos", base_url = "http://agent-api:7777", agent_id = "support" }
 
 [[scenarios]]

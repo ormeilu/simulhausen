@@ -17,6 +17,10 @@ of the agent under test as the model: ``-m support-agent@v3``. Only ``OpenAIChat
 Secrets never go into kwargs. Harbor records kwargs in the job's ``config.json``, and the target is written to a
 file inside the container. Name environment variables instead (``api_key_env=AGENTOS_API_KEY``) and pass their
 values with ``--ae AGENTOS_API_KEY=...``; simulhausen resolves ``*_env`` keys inside the container.
+
+This is the only module of simulhausen that imports Harbor (and through it litellm), so it needs the extra:
+``pip install 'simulhausen[harbor]'``. ``simulhausen.harbor`` re-exports the agent classes lazily, which makes
+``-a simulhausen.harbor:AgentOSAgent`` the import path to pass to ``harbor run``.
 """
 
 import json
@@ -35,9 +39,10 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from pydantic import Field, field_validator, model_validator
 
-from simulhausen_harbor._version import DEFAULT_SIMULHAUSEN_SPEC, UV_VERSION
+from simulhausen.harbor.export import UV_VERSION, default_simulhausen_spec
+from simulhausen.harbor.paths import IMAGE_SCENARIO_PATH, TRAJECTORY_FILE, TRANSCRIPT_FILE
 
-DEFAULT_SCENARIO_PATH = "/simulhausen/scenario.json"
+DEFAULT_SCENARIO_PATH = IMAGE_SCENARIO_PATH
 """Where ``simulhausen harbor export`` bakes the play-side scenario into the task image."""
 
 TARGET_FILE = "/installed-agent/simulhausen/target.json"
@@ -46,8 +51,6 @@ TARGET_FILE = "/installed-agent/simulhausen/target.json"
 LOG_SUBDIR = "simulhausen"
 """Subdirectory of the agent log dir (``/logs/agent``): play writes there and the verifier reads from there."""
 
-TRANSCRIPT_FILE = "transcript.json"
-TRAJECTORY_FILE = "trajectory.json"
 PLAY_LOG_FILE = "play.log"
 INSTALL_LOG_FILE = "simulhausen-install.log"
 
@@ -61,7 +64,7 @@ _BIN_DIR = "/usr/local/bin"
 
 # play_timeout_sec sends SIGINT first, so play can unwind and still write what it has, then SIGKILL.
 _PLAY_KILL_AFTER_SEC = 30
-_NO_TIMEOUT_WARNING = "simulhausen-harbor: timeout(1) not found in the container; play_timeout_sec is ignored"
+_NO_TIMEOUT_WARNING = "simulhausen: timeout(1) not found in the container; play_timeout_sec is ignored"
 
 _API_KEY_MESSAGE = (
     "a literal api_key is not accepted: Harbor stores kwargs in the job's config.json. "
@@ -96,7 +99,7 @@ class SimulhausenOptions(InstalledAgentOptions):
         default=None,
         description=(
             "simulhausen version installed (simulhausen==<version>) when the image has no simulhausen CLI. "
-            f"Default: {DEFAULT_SIMULHAUSEN_SPEC}."
+            "Default: the simulhausen version installed next to Harbor."
         ),
     )
     prompt_template_path: str | None = Field(
@@ -126,7 +129,8 @@ class SimulhausenOptions(InstalledAgentOptions):
         description=(
             "pip requirement installed when the image has no simulhausen CLI, e.g. "
             '"simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz". '
-            f"Default: {DEFAULT_SIMULHAUSEN_SPEC}, or simulhausen==<version> when version is set."
+            "Default: simulhausen==<version> when version is set, else simulhausen==<the version installed next "
+            "to Harbor>, which simulhausen harbor export also puts into task images."
         ),
     )
     pip: list[str] = Field(
@@ -283,7 +287,7 @@ class LangGraphOptions(_HTTPOptions):
 class SimulhausenAgent(BaseInstalledAgent):
     """Plays the task's scenario against the target from the kwargs, the env or the scenario file.
 
-    ``harbor run -a simulhausen_harbor:SimulhausenAgent --ak 'target={"type": "agentos", ...}'``. The
+    ``harbor run -a simulhausen.harbor:SimulhausenAgent --ak 'target={"type": "agentos", ...}'``. The
     protocol-specific subclasses below take flat kwargs instead and give results a protocol-specific agent name.
     """
 
@@ -299,6 +303,11 @@ class SimulhausenAgent(BaseInstalledAgent):
         if self.target is not None:
             self._validate_target(self.target)
             self._warn_about_literal_secrets(self.target)
+        self._simulhausen_spec = options.simulhausen_spec or (
+            f"simulhausen=={self._version}"
+            if self._version
+            else default_simulhausen_spec(option="--ak simulhausen_spec=...")
+        )
         self._detected_version: str | None = None
 
     @staticmethod
@@ -318,12 +327,8 @@ class SimulhausenAgent(BaseInstalledAgent):
 
     @property
     def simulhausen_spec(self) -> str:
-        """Requirement installed when the container lacks the CLI."""
-        if self.simulhausen_options.simulhausen_spec:
-            return self.simulhausen_options.simulhausen_spec
-        if self._version:
-            return f"simulhausen=={self._version}"
-        return DEFAULT_SIMULHAUSEN_SPEC
+        """Requirement installed when the container lacks the CLI: by default the simulhausen version here."""
+        return self._simulhausen_spec
 
     @property
     def environment_out_dir(self) -> PurePosixPath:
@@ -442,7 +447,7 @@ class SimulhausenAgent(BaseInstalledAgent):
         # A file rather than --target-json on the command line: no quoting to get wrong, and the command line
         # (which Harbor logs on failure) stays short. There are no secrets in it, so it is world-readable.
         await self.exec_as_root(environment, command=f"mkdir -p {shlex.quote(str(PurePosixPath(TARGET_FILE).parent))}")
-        with tempfile.TemporaryDirectory(prefix="simulhausen-harbor-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="simulhausen-target-") as tmp:
             await environment.upload_file(_write_json(Path(tmp) / "target.json", self.target), TARGET_FILE)
         await self.exec_as_root(environment, command=f"chmod 0644 {shlex.quote(TARGET_FILE)}")
 

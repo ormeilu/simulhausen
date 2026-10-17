@@ -34,23 +34,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
       - run: uv run pytest --cov-fail-under=95
-  # simulhausen-harbor: its own uv project (harbor brings litellm, which the root lock must not see).
-  harbor-integration:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: integrations/harbor
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
-        with:
-          enable-cache: true
-          working-directory: integrations/harbor
-      - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run ty check
-      - run: uv run pytest --cov-fail-under=95
   build:
     runs-on: ubuntu-latest
     steps:
@@ -59,3 +42,5 @@ jobs:
       - run: uv build
       - name: Smoke-test the wheel
         run: uv run --isolated --no-project --with dist/*.whl python -c "import simulhausen; print(simulhausen.__version__)"
+      - name: A plain install brings neither Harbor nor litellm
+        run: uv run --isolated --no-project --with dist/*.whl python -c "import importlib.util as u; assert not (u.find_spec('harbor') or u.find_spec('litellm'))"

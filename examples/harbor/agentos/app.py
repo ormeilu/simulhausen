@@ -5,7 +5,7 @@ It runs as the ``agent-api`` sidecar (see ``agentos-sidecar.yaml``) and answers 
 
 Run it locally (needs ``OPENAI_API_KEY``)::
 
-    uv run --with 'agno[os]==3.1.1' --with openai python examples/agentos/app.py
+    uv run --no-project --with 'agno[os]==3.1.1' --with openai python examples/harbor/agentos/app.py
     curl -s localhost:7777/agents/support/runs -F message='i was charged twice for 1042' -F stream=false
 """
 

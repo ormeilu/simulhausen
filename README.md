@@ -38,7 +38,8 @@ assert result.success, result.failure_summary()
 uv add --dev simulhausen
 ```
 
-or `pip install simulhausen`. Python 3.12+ and agno 3.x. The pytest plugin registers itself on install.
+or `pip install simulhausen`. Python 3.12+ and agno 3.x. The pytest plugin registers itself on install. The
+`harbor` extra (`pip install 'simulhausen[harbor]'`) adds the agent classes for Harbor jobs (see Harbor below).
 
 ## Quick start
 
@@ -461,17 +462,17 @@ The report links the CI job when `CI_JOB_URL` (GitLab) or the `GITHUB_*` run var
 [Harbor](https://github.com/harbor-framework/harbor) evaluates agents on tasks: a task is a directory with a
 container image, an instruction and a verifier script that writes `/logs/verifier/reward.json`. The
 `simulhausen harbor` commands run scenarios inside such task containers, and `simulhausen harbor export` turns a
-scenario file into one task per scenario. simulhausen never imports Harbor (which depends on litellm); the
-commands only read and write files where Harbor expects them.
+scenario file into one task per scenario. The commands never import Harbor (which depends on litellm); they only
+read and write files where Harbor expects them.
 
 There are two ways to run a task:
 
-- **Agent mode** (the default). Harbor's agent is your agent under test. A Harbor agent from the separate
-  [`simulhausen-harbor`](https://github.com/ormeilu/simulhausen/tree/main/integrations/harbor) package
-  (`-a simulhausen_harbor:AgentOSAgent` and friends) runs `simulhausen harbor play`
-  in the task container: the user simulator talks to your agent and the dialogue lands in
-  `/logs/agent/simulhausen/`. The verifier then runs `simulhausen harbor judge`, which grades the dialogue and
-  writes the reward. The criteria reach the container only with the verifier's files, never during the dialogue.
+- **Agent mode** (the default). Harbor's agent is your agent under test. One of simulhausen's Harbor agents
+  (`-a simulhausen.harbor:AgentOSAgent` and friends, from the `harbor` extra; see Harbor agents below) runs
+  `simulhausen harbor play` in the task container: the user simulator talks to your agent and the dialogue
+  lands in `/logs/agent/simulhausen/`. The verifier then runs `simulhausen harbor judge`, which grades the
+  dialogue and writes the reward. The criteria reach the container only with the verifier's files, never during
+  the dialogue.
 - **Verifier mode**. Run with `harbor run -a nop`; the verifier plays and grades in one go
   (`simulhausen harbor run`). Nothing to install on the Harbor side, but Harbor's agent column says `nop`, and
   the whole dialogue counts against the verifier's timeout.
@@ -606,7 +607,7 @@ error while grading) unless a failure was already certain, a missing transcript 
 none failed are WARN; an error of the agent under test is FAIL. `simulhausen-result.json` is written in every
 case. With `--warn-reward skip` (the default) a WARN writes no `reward.json`: Harbor records a verifier error,
 so WARN stays out of the mean the way it stays out of simulhausen's pass rate (Harbor's default metrics count a
-missing reward as 0, so use a metric that skips them, such as the one in `simulhausen-harbor`).
+missing reward as 0, so use a metric that skips them, such as simulhausen's pass-rate metric below).
 `--warn-reward zero` writes `{"reward": 0}` instead.
 
 ### Exporting tasks
@@ -627,17 +628,106 @@ directories `export` generated.
 Then, in agent mode:
 
 ```bash
-harbor run -p tasks -a simulhausen_harbor:AgentOSAgent --ak base_url=http://agent-api:7777 --ak agent_id=support \
+export OPENAI_API_KEY=sk-...    # the judge ([verifier.env]) and the sidecar read it from this shell
+harbor run -p tasks -a simulhausen.harbor:AgentOSAgent --ak base_url=http://agent-api:7777 --ak agent_id=support \
   -m support-agent@v3 --extra-docker-compose agentos-sidecar.yaml \
   --ae OPENAI_API_KEY=$OPENAI_API_KEY -y
 ```
 
-Harbor groups results by agent, model and dataset, and an agent class has one fixed name, so `-m` is where the
-agent under test gets its label (`support-agent@v3`). The agent classes, their options, the pass-rate metric
-and a runnable AgentOS example with a sidecar overlay are described in
-[`integrations/harbor`](https://github.com/ormeilu/simulhausen/tree/main/integrations/harbor).
+`--ak` sets the target and the play options of the Harbor agent (see below), `-m` labels the agent under
+test, `--ae` passes variables to the agent phase only (the simulator's key here), and `--extra-docker-compose`
+adds the agent under test as a sidecar named `agent-api` for this run (a task exported with `--compose` carries
+it already). Add `-k 3` for three attempts per task and Harbor's pass@k.
 
-In verifier mode, `harbor run -p tasks -a nop --extra-docker-compose agentos-sidecar.yaml -y`.
+In verifier mode, `harbor run -p tasks -a nop --extra-docker-compose agentos-sidecar.yaml -y`. The agent column
+then says `nop`, so put the identity of the agent under test into `--job-name`. The whole dialogue runs inside
+`[verifier].timeout_sec`.
+
+[`examples/harbor/agentos`](https://github.com/ormeilu/simulhausen/tree/main/examples/harbor/agentos) is a
+runnable version of both, with an AgentOS app, its sidecar overlay and a job config with the pass-rate metric.
+
+### Harbor agents
+
+The agent classes live in `simulhausen.harbor.agents`, the only module that imports Harbor. Harbor (0.24.x)
+imports them itself, so install simulhausen with the `harbor` extra next to it:
+
+```bash
+uv tool install harbor --with 'simulhausen[harbor]'
+```
+
+or `pip install 'simulhausen[harbor]'` in Harbor's environment. A plain `pip install simulhausen` leaves Harbor
+and litellm out. simulhausen 0.3.0 is the first release with the Harbor commands; until it is on PyPI, install
+`"simulhausen[harbor] @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"` instead, and pass
+the same archive to `export --simulhausen-spec` (and to `--ak simulhausen_spec=...` for an image without the CLI).
+
+| Class (`-a simulhausen.harbor:...`) | `name()` | Target type | Flat kwargs |
+|---|---|---|---|
+| `SimulhausenAgent` | `simulhausen` | from `target` | none: `target`, or nothing to use `SIMULHAUSEN_TARGET` / the scenario's target |
+| `AgentOSAgent` | `simulhausen-agentos` | `agentos` | `base_url` (required), `agent_id` / `team_id` / `workflow_id`, `api_key_env`, `user_id`, `session_state`, `history` |
+| `OpenAIChatAgent` | `simulhausen-openai-chat` | `openai-chat` | `base_url` (required), `model` (default: `-m`), `api_key_env`, `system_prompt`, `extra_body` |
+| `A2AAgent` | `simulhausen-a2a` | `a2a` | `url` (required) |
+| `LangGraphAgent` | `simulhausen-langgraph` | `langgraph` | `base_url`, `assistant_id` (both required), `api_key_env`, `input_key` |
+
+All HTTP agents also take `headers`, `timeout`, `retries` and `retry_delay`. The flat kwargs you set build the
+target, which is written to `/installed-agent/simulhausen/target.json` and passed to play as `--target-file`. An
+explicit `target` (a dict, or a JSON string) wins key by key, so it also reaches options without a flat kwarg,
+such as extra AgentOS form fields. Other target types (`openai-responses`, `python`) go through
+`SimulhausenAgent` with `--ak 'target={"type": "openai-responses", ...}'`.
+
+Every agent also takes:
+
+| Kwarg | Default | Meaning |
+|---|---|---|
+| `target` | none | Target config (see above). |
+| `simulator_model` | none | agno model string for the user simulator, e.g. `openai:gpt-4.1-mini`. Unset: `SIMULHAUSEN_SIMULATOR_MODEL`, `SIMULHAUSEN_MODEL` (via `--ae`), then the scenario. |
+| `scenario_path` | `/simulhausen/scenario.json` | Scenario file in the container (where `export` puts it). |
+| `simulhausen_spec` | `simulhausen==<this version>` | Requirement installed when the image has no `simulhausen` CLI: the version next to Harbor, as in exported images. |
+| `version` | none | Shorthand for `simulhausen_spec=simulhausen==<version>`. |
+| `pip` | `["openai"]` | Extra requirements installed with it: the simulator model's SDK. |
+| `play_timeout_sec` | none | Interrupt play after this many seconds (SIGINT, SIGKILL 30 s later). The verifier still runs. |
+
+`harbor agent schema simulhausen.harbor:AgentOSAgent` lists them too. Harbor validates the kwargs before it
+queues any trial, so a typo or a missing `base_url` stops the job at once. Exported images already have the CLI;
+otherwise the agent installs it with uv during setup.
+
+The agent runs play as the task's agent user and keeps its output in `play.log`:
+
+```bash
+simulhausen harbor play --scenario /simulhausen/scenario.json \
+  --target-file /installed-agent/simulhausen/target.json --out /logs/agent/simulhausen [--model M]
+```
+
+A non-zero exit (2 means the harness broke; the transcript is still written) raises Harbor's
+`NonZeroAgentExitCodeError`: Harbor records it and still runs the verifier, which reports the scenario as WARN.
+The trial's `agent_result.metadata` then summarises the transcript: `turns`, `messages`, `tool_calls` (clean
+executions only), `failed_tool_calls`, `stop_reason`, `harness_error`, `error`, `agent_time`, `total_time`, the
+scenario id and the simulhausen version, or `transcript_error` when the transcript is missing or broken. Play's
+trajectory is copied to `agent/trajectory.json`, where `harbor view jobs` shows the dialogue.
+
+Harbor groups every statistic by `<agent>__<model>__<dataset>`, and an agent's name is fixed per class. Pass the
+identity of the agent under test as the model, e.g. `-m support-agent@v1`; Harbor records it as given.
+`OpenAIChatAgent` also sends it as the endpoint's `model` unless `--ak model=...` says otherwise.
+
+### Pass-rate metric
+
+Harbor's default mean counts a trial without a reward as 0, so every WARN would count as a failure.
+`simulhausen/harbor/metric.py`, a Harbor `uv-script` metric with no dependencies, keeps WARN out the way
+simulhausen does:
+
+```yaml
+metrics:
+  - type: uv-script
+    kwargs:
+      script_path: src/simulhausen/harbor/metric.py   # relative to where `harbor run` runs
+```
+
+It reports `pass_rate` (PASS / (PASS + FAIL), 0-1), `n_pass`, `n_fail`, `n_warn`, and the mean of every other
+numeric reward key over the trials that have it (`judge_score`, `criteria_pass_rate`, `criterion_<n>` with
+`--rewards detailed`). `criterion_<n>` and `check_<n>` are numbered within each scenario, so their means mean
+something only across trials of the same task (`-k`). The metric replaces Harbor's default mean in that job.
+Outside a checkout, download the file or point `script_path` at the installed copy
+(`python -c "import simulhausen.harbor.metric as m; print(m.__file__)"`). It also runs as
+`python -m simulhausen.harbor.metric -i rewards.jsonl [-o metric.json]`.
 
 ### Models and secrets
 
@@ -659,9 +749,27 @@ Harbor does not copy your shell's variables into the container:
   the target's variables (`--env OPENAI_API_KEY --env AGENTOS_API_KEY`) too;
 - the agent phase gets what `harbor run --ae NAME=value` passes, such as the simulator's key and the target's
   `*_env` variables;
-- a sidecar from `docker-compose.yaml` gets variables through `${NAME}` interpolation in that file.
+- a sidecar from `docker-compose.yaml` or `--extra-docker-compose` gets variables through `${NAME}`
+  interpolation in that file, read from the shell that runs `harbor run`.
+
+Never put a key into `--ak`: Harbor stores the kwargs in the job's `config.json`, and the target is written to a
+file in the container. A literal `api_key` is refused and credential-looking headers get a warning. Name a
+variable instead and pass its value with `--ae`: `--ak api_key_env=AGENTOS_API_KEY --ae
+AGENTOS_API_KEY=$AGENTOS_API_KEY`. The judge's key can also come from `harbor run --ve OPENAI_API_KEY=...`.
 
 Harbor runs are not cached: the containers are disposable.
+
+### Caveats
+
+- Sidecars need a Harbor environment provider that runs Docker Compose. The default `docker` provider does;
+  check Harbor's multi-container docs before switching `-e`.
+- A separate verifier environment (`[verifier] environment_mode = "separate"`) has no `/logs/agent` and no
+  sidecars. In agent mode, add `artifacts = ["/logs/agent/simulhausen"]` to `task.toml` (or pass `--artifact
+  /logs/agent/simulhausen`) so the transcript reaches the judge. Verifier mode needs Harbor's default shared
+  verifier.
+- With `network_mode = "no-network"` or an allowlist, allow the model API host and the agent under test, and
+  PyPI if the image has to install simulhausen.
+- The instruction Harbor hands the agent (the scenario description) is not used: play reads the scenario file.
 
 ## Caching
 

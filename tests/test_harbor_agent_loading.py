@@ -1,10 +1,13 @@
 """Harbor itself loads the agents: its kwargs parser, AgentFactory, preflight and `harbor run --dry-run`.
 
 These go through Harbor's real code paths in-process; nothing builds an image or starts a container (the docker
-provider's preflight, which only checks for a running daemon, is stubbed out).
+provider's preflight, which only checks for a running daemon, is stubbed out). Also: importing simulhausen never
+imports Harbor, and the lazy re-exports in ``simulhausen.harbor`` say what to install when Harbor is missing.
 """
 
-import json
+import importlib
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,10 +21,18 @@ from harbor.models.job.config import JobConfig
 from harbor.models.trial.config import AgentConfig
 from typer.testing import CliRunner
 
-from simulhausen_harbor import A2AAgent, AgentOSAgent, LangGraphAgent, OpenAIChatAgent, SimulhausenAgent
+import simulhausen.harbor
+from simulhausen.harbor import agents
+from simulhausen.harbor.agents import A2AAgent, AgentOSAgent, LangGraphAgent, OpenAIChatAgent, SimulhausenAgent
+from simulhausen.harbor.export import ExportMode, ExportOptions, export_tasks
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_DIR = PACKAGE_ROOT / "examples" / "agentos"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_DIR = REPO_ROOT / "examples" / "harbor" / "agentos"
+
+
+@pytest.fixture(autouse=True)
+def _no_harbor_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARBOR_TELEMETRY", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -29,25 +40,63 @@ def _no_docker_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(DockerEnvironment, "preflight", classmethod(lambda cls: None))
 
 
+# --- importing ----------------------------------------------------------------------------------------------------
+
+
+def test_plain_imports_load_neither_harbor_nor_litellm():
+    # A fresh interpreter: this process has Harbor loaded already.
+    code = (
+        "import sys, simulhausen, simulhausen.harbor, simulhausen.cli\n"
+        "print(sorted({name.split('.')[0] for name in sys.modules} & {'harbor', 'litellm'}))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+    assert result.stdout.strip() == "[]"
+
+
+@pytest.mark.parametrize("name", ["SimulhausenAgent", "AgentOSAgent", "OpenAIChatAgent", "A2AAgent", "LangGraphAgent"])
+def test_package_reexports_the_agent_classes(name: str):
+    assert getattr(simulhausen.harbor, name) is getattr(agents, name)
+
+
+def test_unknown_attribute_is_an_attribute_error():
+    with pytest.raises(AttributeError, match="has no attribute 'NoSuchAgent'"):
+        _ = simulhausen.harbor.NoSuchAgent
+
+
+def test_missing_harbor_says_what_to_install():
+    # What a plain `pip install simulhausen` sees: the agents module cannot import Harbor.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delitem(sys.modules, "simulhausen.harbor.agents")
+        patch.setitem(sys.modules, "harbor.agents.installed.base", None)
+        with pytest.raises(ImportError, match=r"pip install 'simulhausen\[harbor\]'"):
+            _ = simulhausen.harbor.AgentOSAgent
+        # The failed import left no half-initialised module behind.
+        assert "simulhausen.harbor.agents" not in sys.modules
+    assert importlib.import_module("simulhausen.harbor.agents") is agents
+
+
+# --- AgentFactory -------------------------------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize(
     ("import_path", "cls", "ak", "model"),
     [
         (
-            "simulhausen_harbor:AgentOSAgent",
+            "simulhausen.harbor:AgentOSAgent",
             AgentOSAgent,
             ["base_url=http://agent-api:7777", "agent_id=support", 'session_state={"tier": "gold"}', "retries=3"],
             "support-agent@v1",
         ),
-        ("simulhausen_harbor.agents:OpenAIChatAgent", OpenAIChatAgent, ["base_url=http://agent-api:8000/v1"], "my-llm"),
-        ("simulhausen_harbor:A2AAgent", A2AAgent, ["url=http://agent-api:9999"], "a2a-agent@v2"),
+        ("simulhausen.harbor.agents:OpenAIChatAgent", OpenAIChatAgent, ["base_url=http://agent-api:8000/v1"], "my-llm"),
+        ("simulhausen.harbor:A2AAgent", A2AAgent, ["url=http://agent-api:9999"], "a2a-agent@v2"),
         (
-            "simulhausen_harbor:LangGraphAgent",
+            "simulhausen.harbor:LangGraphAgent",
             LangGraphAgent,
             ["base_url=http://agent-api:2024", "assistant_id=agent", "api_key_env=LANGSMITH_API_KEY"],
             "graph@main",
         ),
         (
-            "simulhausen_harbor:SimulhausenAgent",
+            "simulhausen.harbor:SimulhausenAgent",
             SimulhausenAgent,
             ['target={"type": "agentos", "base_url": "http://agent-api:7777"}', 'pip=["openai", "anthropic"]'],
             None,
@@ -78,7 +127,7 @@ def test_agent_factory_builds_the_agents_from_cli_kwargs(
 
 def test_parsed_kwargs_keep_their_json_types(tmp_path: Path):
     config = AgentConfig(
-        import_path="simulhausen_harbor:AgentOSAgent",
+        import_path="simulhausen.harbor:AgentOSAgent",
         kwargs=parse_kwargs(["base_url=http://agent-api:7777", 'session_state={"tier": "gold"}', "agent_id=42"]),
     )
     agent = AgentFactory.create_agent_from_config(config, logs_dir=tmp_path)
@@ -92,74 +141,20 @@ def test_parsed_kwargs_keep_their_json_types(tmp_path: Path):
 
 
 def test_preflight_rejects_bad_kwargs_before_any_trial():
-    config = AgentConfig(name="simulhausen_harbor:AgentOSAgent", kwargs=parse_kwargs(["base_ur=http://x"]))
+    config = AgentConfig(name="simulhausen.harbor:AgentOSAgent", kwargs=parse_kwargs(["base_ur=http://x"]))
     with pytest.raises(ValueError, match="Unknown option 'base_ur'"):
         AgentFactory.run_preflight(config)
 
 
-def write_exported_task(tasks_dir: Path, scenario_id: str, *, mode: str = "agent") -> Path:
-    """A task directory shaped like `simulhausen harbor export` output."""
-    task = tasks_dir / scenario_id
-    (task / "environment").mkdir(parents=True)
-    (task / "tests").mkdir()
-    (task / "task.toml").write_text(
-        "\n".join(
-            [
-                'schema_version = "1.4"',
-                "",
-                "[task]",
-                f'name = "simulhausen/{scenario_id}"',
-                f'description = "{scenario_id}"',
-                'keywords = ["support"]',
-                "",
-                "[metadata]",
-                'generator = "simulhausen"',
-                "",
-                "[agent]",
-                "timeout_sec = 900.0",
-                "",
-                "[verifier]",
-                "timeout_sec = 600.0",
-                "",
-                "[verifier.env]",
-                'OPENAI_API_KEY = "${OPENAI_API_KEY}"',
-                'SIMULHAUSEN_JUDGE_MODEL = "${SIMULHAUSEN_JUDGE_MODEL:-}"',
-                "",
-                "[environment]",
-                "build_timeout_sec = 600.0",
-                "cpus = 1",
-                "memory_mb = 2048",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (task / "instruction.md").write_text("You were charged twice for order 1042.\n", encoding="utf-8")
-    scenario = {"id": scenario_id, "name": scenario_id, "description": "You were charged twice for order 1042."}
-    dockerfile = [
-        "FROM python:3.12-slim",
-        "COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /uvx /bin/",
-        "RUN uv pip install --system simulhausen==0.3.0 openai",
-    ]
-    if mode == "agent":
-        (task / "environment" / "scenario.json").write_text(json.dumps(scenario), encoding="utf-8")
-        dockerfile.append("COPY scenario.json /simulhausen/scenario.json")
-    (task / "environment" / "Dockerfile").write_text("\n".join(dockerfile) + "\n", encoding="utf-8")
-    (task / "tests" / "scenario.json").write_text(json.dumps({**scenario, "criteria": ["c"]}), encoding="utf-8")
-    command = "judge" if mode == "agent" else "run"
-    (task / "tests" / "test.sh").write_text(
-        f"#!/bin/bash\nmkdir -p /logs/verifier\nsimulhausen harbor {command} --scenario /tests/scenario.json\n",
-        encoding="utf-8",
-    )
-    return task
+def export_example(output_dir: Path, *, mode: ExportMode = "agent") -> Path:
+    """The example's scenarios as `simulhausen harbor export` writes them: one task per scenario."""
+    export_tasks([EXAMPLE_DIR / "scenarios.toml"], ExportOptions(output_dir=output_dir, mode=mode))
+    return output_dir
 
 
 @pytest.fixture
 def tasks_dir(tmp_path: Path) -> Path:
-    path = tmp_path / "tasks"
-    write_exported_task(path, "refund-duplicated-charge")
-    write_exported_task(path, "refund-missing-order-number")
-    return path
+    return export_example(tmp_path / "tasks")
 
 
 def harbor(*args: str) -> tuple[int, str]:
@@ -167,14 +162,14 @@ def harbor(*args: str) -> tuple[int, str]:
     return result.exit_code, result.output
 
 
-# The commands of README.md and examples/agentos/README.md, verbatim apart from paths and the expanded key.
-def test_readme_option_c_command_passes_harbor_dry_run(tasks_dir: Path):
+# The commands of README.md and examples/harbor/agentos/README.md, verbatim apart from paths and the expanded key.
+def test_readme_agent_mode_command_passes_harbor_dry_run(tasks_dir: Path):
     code, output = harbor(
         "run",
         "-p",
         str(tasks_dir),
         "-a",
-        "simulhausen_harbor:AgentOSAgent",
+        "simulhausen.harbor:AgentOSAgent",
         "--ak",
         "base_url=http://agent-api:7777",
         "--ak",
@@ -189,12 +184,11 @@ def test_readme_option_c_command_passes_harbor_dry_run(tasks_dir: Path):
         "--dry-run",
     )
     assert code == 0, output
-    assert "Dry run OK — 2 trial(s)" in output
+    assert "Dry run OK — 3 trial(s)" in output
 
 
-def test_readme_option_a_command_passes_harbor_dry_run(tmp_path: Path):
-    tasks = tmp_path / "tasks-verifier"
-    write_exported_task(tasks, "refund-duplicated-charge", mode="verifier")
+def test_readme_verifier_mode_command_passes_harbor_dry_run(tmp_path: Path):
+    tasks = export_example(tmp_path / "tasks-verifier", mode="verifier")
     code, output = harbor(
         "run",
         "-p",
@@ -209,43 +203,44 @@ def test_readme_option_a_command_passes_harbor_dry_run(tmp_path: Path):
         "--dry-run",
     )
     assert code == 0, output
-    assert "Dry run OK — 1 trial(s)" in output
+    assert "Dry run OK — 3 trial(s)" in output
 
 
 def test_dry_run_reports_a_bad_kwarg(tasks_dir: Path):
     code, output = harbor(
-        "run", "-p", str(tasks_dir), "-a", "simulhausen_harbor:AgentOSAgent", "--ak", "agent_id=support", "--dry-run"
+        "run", "-p", str(tasks_dir), "-a", "simulhausen.harbor:AgentOSAgent", "--ak", "agent_id=support", "--dry-run"
     )
     assert code != 0
     assert "missing base_url" in output
 
 
 def test_example_job_config_passes_harbor_dry_run(tmp_path: Path, tasks_dir: Path, monkeypatch: pytest.MonkeyPatch):
-    # job.yaml paths are relative to integrations/harbor; mirror that layout around the exported tasks.
-    (tmp_path / "examples").symlink_to(PACKAGE_ROOT / "examples", target_is_directory=True)
-    (tmp_path / "src").symlink_to(PACKAGE_ROOT / "src", target_is_directory=True)
+    # job.yaml paths are relative to the repository root; mirror that layout around the exported tasks.
+    (tmp_path / "examples").symlink_to(REPO_ROOT / "examples", target_is_directory=True)
+    (tmp_path / "src").symlink_to(REPO_ROOT / "src", target_is_directory=True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
-    code, output = harbor("run", "-c", "examples/agentos/job.yaml", "-y", "--dry-run")
+    code, output = harbor("run", "-c", "examples/harbor/agentos/job.yaml", "-y", "--dry-run")
 
     assert code == 0, output
-    assert "Dry run OK — 2 trial(s)" in output
+    assert "Dry run OK — 3 trial(s)" in output
 
 
 def test_example_job_config_points_at_real_files(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")  # the agent env template is resolved during preflight
     config = JobConfig.model_validate(yaml.safe_load((EXAMPLE_DIR / "job.yaml").read_text()))
     [agent] = config.agents
-    assert agent.import_path == "simulhausen_harbor:AgentOSAgent"
+    assert agent.import_path == "simulhausen.harbor:AgentOSAgent"
     assert agent.model_name == "support-agent@v1"
     AgentFactory.run_preflight(agent)
     assert [path.as_posix() for path in config.environment.extra_docker_compose] == [
-        "examples/agentos/agentos-sidecar.yaml"
+        "examples/harbor/agentos/agentos-sidecar.yaml"
     ]
-    assert (PACKAGE_ROOT / config.environment.extra_docker_compose[0]).is_file()
+    assert (REPO_ROOT / config.environment.extra_docker_compose[0]).is_file()
     [metric] = config.metrics
-    script = PACKAGE_ROOT / metric.kwargs["script_path"]
+    script = REPO_ROOT / metric.kwargs["script_path"]
+    assert script == REPO_ROOT / "src" / "simulhausen" / "harbor" / "metric.py"
     assert UvScript(script_path=script)  # the constructor checks that the script exists
 
 

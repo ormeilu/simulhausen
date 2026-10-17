@@ -9,13 +9,13 @@ scenario description, which Harbor hands to the agent as its instruction), an
 Two modes decide which phase plays the dialogue:
 
 * ``agent`` (default): the agent phase plays it, through a Harbor agent that runs
-  ``simulhausen harbor play`` in the task container (``simulhausen-harbor``'s agents), and
+  ``simulhausen harbor play`` in the task container (:mod:`simulhausen.harbor.agents`), and
   the verifier grades the transcript with ``simulhausen harbor judge``. The image carries
   the scenario without its criteria; the full scenario reaches the container only with
   the verifier's ``tests/``.
 * ``verifier``: the verifier plays and grades in one go (``simulhausen harbor run``) and
-  the agent phase does nothing (``harbor run -a nop``). No Harbor-side package needed,
-  but Harbor's agent column then says ``nop``.
+  the agent phase does nothing (``harbor run -a nop``). Harbor needs no simulhausen then,
+  but its agent column says ``nop``.
 
 Secrets never go into the files: ``[verifier.env]`` passes host variables through by
 name (``"${OPENAI_API_KEY}"``), resolved by Harbor when the job starts.
@@ -53,6 +53,7 @@ __all__ = [
     "EXPORT_MODES",
     "PYTHON_IMAGE",
     "UV_IMAGE",
+    "UV_VERSION",
     "ExportMode",
     "ExportOptions",
     "default_simulhausen_spec",
@@ -65,8 +66,10 @@ type ExportMode = Literal["agent", "verifier"]
 EXPORT_MODES: Final[tuple[ExportMode, ...]] = ("agent", "verifier")
 
 PYTHON_IMAGE: Final = "python:3.12-slim"
-# Pinned, so a task builds the same image next year.
-UV_IMAGE: Final = "ghcr.io/astral-sh/uv:0.12.21"
+# Pinned, so a task builds the same image next year. The Harbor agents install the same uv
+# into an image that has none.
+UV_VERSION: Final = "0.12.21"
+UV_IMAGE: Final = f"ghcr.io/astral-sh/uv:{UV_VERSION}"
 TASK_SCHEMA_VERSION: Final = "1.4"
 GENERATOR: Final = "simulhausen"
 
@@ -118,14 +121,20 @@ class ExportOptions:
     warn_reward: WarnReward = "skip"
 
 
-def default_simulhausen_spec() -> str:
-    """``simulhausen==<this version>``, or plain ``simulhausen`` when this version is not on PyPI."""
+def default_simulhausen_spec(*, option: str = "--simulhausen-spec") -> str:
+    """``simulhausen==<this version>``, or plain ``simulhausen`` when this version is not on PyPI.
+
+    ``export`` bakes it into the task image and the Harbor agents install it into an image
+    without the CLI, so both run the version installed here. ``option`` names the setting
+    that pins another requirement, for the warning.
+    """
     if "+" in __version__:
         # A source tree ("0+unknown") or a local build: no such release to pin.
         logger.warning(
             "simulhausen %s is not a released version; the task image installs the latest release instead. "
-            "Pass --simulhausen-spec to pin one.",
+            "Pass %s to pin one.",
             __version__,
+            option,
         )
         return "simulhausen"
     return f"simulhausen=={__version__}"

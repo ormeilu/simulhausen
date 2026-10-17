@@ -55,17 +55,16 @@ repos:
     hooks:
       # types_or on every hook: since ruff 0.16 the hooks also pick up markdown
       # (python inside ``` blocks), and the README examples are illustrative.
-      # No --config: ruff takes each file's nearest pyproject.toml, so
-      # integrations/harbor (its own project) is checked with its own settings.
       - id: ruff-check
-        args: [--fix]
+        args: [--config, pyproject.toml, --fix]
         types_or: [python, pyi]
         priority: 21
       - id: ruff-check
-        args: [--select, I, --fix]
+        args: [--config, pyproject.toml, --select, I, --fix]
         types_or: [python, pyi]
         priority: 22
       - id: ruff-format
+        args: [--config, pyproject.toml]
         types_or: [python, pyi]
         priority: 23
         fail_fast: true

@@ -1,6 +1,7 @@
 """The uv-script metric: simulhausen's pass rate over Harbor rewards, in-process and the way Harbor runs it."""
 
 import json
+import runpy
 import shutil
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 from harbor.metrics.uv_script import UvScript
 
-from simulhausen_harbor import metric
+from simulhausen.harbor import metric
 
 METRIC_SCRIPT = Path(metric.__file__)
 
@@ -84,7 +85,7 @@ def test_main_prints_without_an_output_path(tmp_path: Path, capsys: pytest.Captu
 @pytest.mark.parametrize(
     "command",
     [
-        [sys.executable, "-m", "simulhausen_harbor.metric"],
+        [sys.executable, "-m", "simulhausen.harbor.metric"],
         # -I: the script must not depend on the package (or anything next to it) being importable.
         [sys.executable, "-I", str(METRIC_SCRIPT)],
     ],
@@ -97,6 +98,18 @@ def test_runs_as_a_command(tmp_path: Path, command: list[str]):
     subprocess.run([*command, "-i", str(rewards), "-o", str(output)], check=True, cwd=tmp_path)
 
     assert json.loads(output.read_text()) == {"pass_rate": 1.0, "n_pass": 1, "n_fail": 0, "n_warn": 1}
+
+
+def test_script_entry_point_exits_with_main_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # The `python metric.py` path in-process, so coverage sees the __main__ guard.
+    rewards = write_rewards(tmp_path / "rewards.jsonl", ['{"reward": 0}'])
+    monkeypatch.setattr(sys, "argv", ["metric.py", "-i", str(rewards), "-o", str(tmp_path / "metric.json")])
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(METRIC_SCRIPT), run_name="__main__")
+
+    assert exit_info.value.code == 0
+    assert json.loads((tmp_path / "metric.json").read_text())["n_fail"] == 1
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="Harbor's uv-script metric shells out to uv")

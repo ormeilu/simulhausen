@@ -390,7 +390,7 @@ def test_export(scenario_file: Path, tmp_path: Path, capsys: pytest.CaptureFixtu
     printed = capsys.readouterr().out
     assert f"{out / 'refund'}\n" in printed
     # The scenario's target is a python factory, which only the generic agent runs.
-    assert f"1 task(s) written; run them with: harbor run -p {out} -a simulhausen_harbor:SimulhausenAgent" in printed
+    assert f"1 task(s) written; run them with: harbor run -p {out} -a simulhausen.harbor:SimulhausenAgent" in printed
 
 
 def test_export_verifier_mode_with_options(
@@ -440,7 +440,7 @@ def test_export_hint_names_the_harbor_agent_for_the_target(
     code = main(["harbor", "export", str(scenario_file), "--output-dir", str(tmp_path / "tasks")])
 
     assert code == EXIT_OK
-    assert f"-a simulhausen_harbor:{hint}" in capsys.readouterr().out
+    assert f"-a simulhausen.harbor:{hint}" in capsys.readouterr().out
 
 
 def test_files_are_utf8_with_lf_whatever_the_locale(tmp_path: Path) -> None:

@@ -1,0 +1,35 @@
+event: RunStarted
+data: {"created_at":1792169424,"event":"RunStarted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: PreHookStarted
+data: {"created_at":1792169424,"event":"PreHookStarted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"pre_hook_name":"guardrail","run_input":{"input_content":"Where is my order?"}}
+
+event: PreHookCompleted
+data: {"created_at":1792169424,"event":"PreHookCompleted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"pre_hook_name":"guardrail","run_input":{"input_content":"Where is my order?"}}
+
+event: ModelRequestStarted
+data: {"created_at":1792169424,"event":"ModelRequestStarted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: ModelRequestCompleted
+data: {"created_at":1792169424,"event":"ModelRequestCompleted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"model":"scripted-1","model_provider":"Fake","input_tokens":0,"output_tokens":0,"total_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}
+
+event: ToolCallStarted
+data: {"created_at":1792169424,"event":"ToolCallStarted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"tool":{"tool_call_id":"call_1","tool_name":"lookup_order","tool_args":{"order_id":"1042"},"tool_call_error":null,"result":null,"metrics":null,"child_run_id":null,"stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}}
+
+event: ToolCallCompleted
+data: {"created_at":1792169424,"event":"ToolCallCompleted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"content":"lookup_order(order_id=1042) completed in 0.0013s. ","tool":{"tool_call_id":"call_1","tool_name":"lookup_order","tool_args":{"order_id":"1042"},"tool_call_error":false,"result":"{\"order_id\": \"1042\", \"status\": \"shipped\"}","metrics":{"start_time":1792169424.7752109,"end_time":1792169424.7765276,"duration":0.0013167490000114412},"child_run_id":null,"stop_after_tool_call":false,"created_at":1792169424,"requires_confirmation":null,"confirmed":null,"confirmation_note":null,"requires_user_input":null,"user_input_schema":null,"user_feedback_schema":null,"answered":null,"external_execution_required":null,"external_execution_silent":null,"approval_type":null,"approval_id":null}}
+
+event: ModelRequestStarted
+data: {"created_at":1792169424,"event":"ModelRequestStarted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"model":"scripted-1","model_provider":"Fake"}
+
+event: RunContent
+data: {"created_at":1792169424,"event":"RunContent","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"content":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","workflow_agent":false,"content_type":"str","reasoning_content":"","references":[{"query":"Where is my order?","references":[{"content":"Refunds take 5 days.","meta_data":{"url":"https://kb.example/refunds"}}],"time":0.0002}]}
+
+event: ModelRequestCompleted
+data: {"created_at":1792169424,"event":"ModelRequestCompleted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"model":"scripted-1","model_provider":"Fake","input_tokens":0,"output_tokens":0,"total_tokens":0,"time_to_first_token":4.5632000023942965e-05,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}
+
+event: RunContentCompleted
+data: {"created_at":1792169424,"event":"RunContentCompleted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0}
+
+event: RunCompleted
+data: {"created_at":1792169424,"event":"RunCompleted","agent_id":"support","agent_name":"Support","run_id":"0b5f2d7c-62e8-4b5b-b80a-c0685fa70126","session_id":"thread-5","nested_depth":0,"content":"Your order status: {\"order_id\": \"1042\", \"status\": \"shipped\"}","content_type":"str","session_state":{},"references":[{"query":"Where is my order?","references":[{"content":"Refunds take 5 days.","meta_data":{"url":"https://kb.example/refunds"}}],"time":0.0002}],"metrics":{"time_to_first_token":0.00612731299997904,"duration":0.010996696000006523,"details":{"model":[{"id":"scripted-1","provider":"Fake"}]}}}

@@ -203,6 +203,84 @@ The judge sees the same evidence: the transcript, the RAG references the agent r
 a capped summary of tool executions, errors included. Each block is fenced with a random per-call tag and the
 judge is told never to follow instructions inside them.
 
+## Agents behind an HTTP API
+
+The agent under test does not have to run in the test process. Five adapters reach it over HTTP: in a container,
+on a staging server, or written in another framework. The simulator, the judge, scripts and tool assertions work
+as with `agno_adapter`.
+
+```python
+import os
+
+import simulhausen as sim
+
+sim.agentos_adapter("http://localhost:7777", agent_id="support", api_key=os.environ["OS_SECURITY_KEY"])
+sim.agentos_adapter("http://localhost:7777", team_id="desk")         # or workflow_id="..."
+sim.openai_chat_adapter("http://localhost:8000/v1", model="support-agent")
+sim.openai_responses_adapter("http://localhost:8000/v1", model="support-agent")
+sim.a2a_adapter("http://localhost:7777/a2a/agents/support/v1/message:send")
+sim.langgraph_adapter("http://localhost:2024", assistant_id="agent", api_key=os.environ["LANGSMITH_API_KEY"])
+```
+
+Each returns an `AgentAdapter` that goes into `agents` like any other:
+
+```python
+result = await sim.run(
+    name="refund: duplicated charge",
+    description="The user was charged twice for order 1042 and wants the extra charge refunded.",
+    agents=[
+        sim.agentos_adapter("http://localhost:7777", agent_id="support", user_id="sim-user"),
+        sim.UserSimulatorAgent(),
+        sim.JudgeAgent(criteria=["The agent looks the order up before promising anything"]),
+    ],
+)
+```
+
+One scenario is one conversation on the server, keyed by the scenario's thread id. With `history="transcript"`
+the adapter sends the whole transcript on every turn instead, in a fresh conversation, so a red-team rollback
+really reaches the agent.
+
+| Adapter | Each turn | Default conversation | `history="transcript"` | Tool calls you can assert |
+|---|---|---|---|---|
+| `agentos_adapter` | `POST /agents/{id}/runs` (`/teams/...`, `/workflows/...`), form fields | `session_id` = thread id, newest user message only | transcript rendered as one message, fresh session | every executed tool, team members' and workflow steps' included |
+| `openai_chat_adapter` | `POST /chat/completions` | none: stateless, the whole transcript every turn | always | none (see below) |
+| `openai_responses_adapter` | `POST /responses` | `previous_response_id` chain, messages since the last response | whole transcript as `input`, `store: false` | `function_call` with its `function_call_output`, `mcp_call` |
+| `a2a_adapter` | JSON-RPC `message/send` (`protocol_version="1.0"`: `SendMessage`) | the server's `contextId`, plus `taskId` while a task waits for input | transcript as one text part, fresh context | none: A2A has no tool calls |
+| `langgraph_adapter` | `POST /threads/{id}/runs/wait` | LangGraph thread (the thread id, or a uuid5 of it) | stateless `POST /runs/wait` | AI `tool_calls` paired with their `tool` messages |
+
+Tool assertions only see what the protocol shows. An agent behind Chat Completions or A2A runs its tools on the
+server and returns text, so `state.has_tool_call` finds nothing there; check such behaviour with judge criteria.
+Calls a server only asks for without running them (Chat `tool_calls`, a Responses `function_call` without output,
+a LangGraph call cut short by an interrupt) are recorded as paused and do not count.
+
+AgentOS keeps history across turns only when the agent has a `db` and adds history to its context. Without that
+every turn starts empty; use `history="transcript"` then. The adapter reads the run's event stream by default (`stream=True`), because only the
+stream tells a guardrail refusal (`InputCheckError`/`OutputCheckError`, which counts as the agent's answer) from a
+failed run. With `stream=False` both come back as `status: ERROR` and count as a backend failure. Extra keyword
+arguments become form fields for `arun` (`dependencies={...}`, `metadata={...}`); dicts are sent as JSON.
+
+Connect errors, timeouts, 5xx, 408 and 429 are retried `retries` times (default 2, `retry_delay * attempt` apart,
+or as long as a `Retry-After` of up to 30 seconds asks). LangGraph also retries 409 (the thread is still busy).
+Failures reported inside a 200 are retried the same way: a failed AgentOS run, a failed A2A task or JSON-RPC
+error, a failed Responses response, a LangGraph `__error__`. When the retries run out the adapter raises
+`SimulationBackendError` and the scenario is WARN. Other 4xx (401, 403, 404, 422) raise `SimulationBackendError`
+at once, with the status and the start of the response body: a wrong key, URL or id is a setup mistake, not
+agent behaviour. Like every harness error it is still raised, so a plain pytest run fails. `timeout` (default 120
+seconds) applies per request; connecting gives up after 10 seconds.
+
+`api_key` is sent as `Authorization: Bearer` (AgentOS `OS_SECURITY_KEY` or a JWT, OpenAI-compatible servers, A2A)
+or as `x-api-key` (LangGraph). `headers` adds or replaces headers, the auth header included. `extra_body` adds
+request fields for the OpenAI and LangGraph adapters, such as `{"config": {"configurable": {"user_id": "u-1"}}}`.
+
+Each call opens its own httpx client, so an adapter works across pytest-asyncio's per-test event loops. Pass
+`client=` to use your own `httpx.AsyncClient` (the adapter never closes it), or `transport=` to route requests,
+for example through an `httpx.MockTransport` in your own tests. httpx comes with agno; there is nothing extra to
+install.
+
+A scripted `sim.agent("text")` reply exists only in the transcript. AgentOS sessions, A2A contexts and LangGraph
+threads never see it, as with `agno_adapter`; transcript mode and the Responses adapter (which sends everything
+since its last stored response) pass it on.
+
 ## Writing scenarios that hold up
 
 One scenario checks one behaviour from one starting state. When it fails, the name alone should tell you what

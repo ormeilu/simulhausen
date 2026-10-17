@@ -585,9 +585,10 @@ Each command first deletes what an earlier run left in its `--out`: `play` the t
 for `judge` to grade and no old reward for Harbor to read.
 
 Exit codes: 0 when done (for `judge` and `run`, a reward was written), 1 for a usage or configuration error
-(nothing was played or graded), 2 when the scenario could not be verified (`play` did not finish the dialogue,
-or `judge`/`run` came to WARN and wrote no reward). Harbor ignores the verifier's exit code; only the reward
-file counts.
+(nothing was played or graded), 2 when the scenario could not be verified (`play` hit a harness failure, or
+`judge`/`run` came to WARN and wrote no reward). An error of the agent under test is not a harness failure:
+`play` exits 0 and the judge grades it FAIL, so Harbor's `--max-retries` does not re-roll a real failure.
+Harbor ignores the verifier's exit code; only the reward file counts.
 
 ### Rewards and WARN
 

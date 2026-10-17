@@ -6,8 +6,12 @@ Harbor and the Harbor agents need to know:
 
 * 0: done; for ``judge`` and ``run``, a reward was written;
 * 1: a usage or configuration error, nothing was played or graded;
-* 2: the scenario could not be verified: ``play`` did not finish the dialogue (the
-  transcript is still written), or ``judge``/``run`` came to WARN and wrote no reward.
+* 2: the scenario could not be verified: ``play`` hit a harness failure (the transcript
+  is still written), or ``judge``/``run`` came to WARN and wrote no reward.
+
+An error of the agent under test is not a harness failure: ``play`` exits 0 and the judge
+grades it FAIL. Harbor records a failed agent phase as an errored trial and retries those
+under ``--max-retries``, which would replace a real FAIL with whichever attempt passes.
 
 Harbor itself ignores the verifier's exit code (only ``reward.json`` counts), so these
 codes are for people reading the logs and for the agent that runs ``play``.
@@ -97,7 +101,8 @@ def _cmd_play(args: argparse.Namespace) -> int:
     )
     write_play_outputs(args.out, transcript)
     _report_play(args.out, transcript)
-    return EXIT_OK if transcript.finished else EXIT_UNVERIFIED
+    # Only a harness failure is a failed agent phase; an agent's own error is graded FAIL (see above).
+    return EXIT_UNVERIFIED if transcript.harness_error else EXIT_OK
 
 
 def _finish_judgement(args: argparse.Namespace, judgement: Judgement) -> int:

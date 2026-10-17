@@ -115,7 +115,8 @@ def test_play_reports_an_agent_error_on_stderr(
     target = json.dumps({**TARGET, "fail_on": "explode"})
     code = main(["harbor", "play", "--scenario", str(path), "--out", str(tmp_path / "o"), "--target-json", target])
 
-    assert code == EXIT_UNVERIFIED
+    # The agent's own error is graded FAIL by the judge, not a failed agent phase for Harbor to retry.
+    assert code == EXIT_OK
     assert "the dialogue did not finish (error): RuntimeError" in capsys.readouterr().err
 
 

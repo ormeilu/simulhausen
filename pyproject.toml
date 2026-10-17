@@ -1,6 +1,6 @@
 [project]
 name = "simulhausen"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local simulation testing for agno agents: an LLM plays the user, an LLM judge grades the dialogue criterion by criterion."
 readme = "README.md"
 license = "Apache-2.0"

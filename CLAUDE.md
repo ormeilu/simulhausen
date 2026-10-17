@@ -31,6 +31,7 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
 - Status rules live in `ScenarioResult.status` (`types.py`): PASS; FAIL; WARN when the harness broke
   (`SimulationHarnessError`) or criteria came back inconclusive with none failed. Pass rate is
   PASS / (PASS + FAIL). `reporting.py` and the README describe the same rules, so a change touches all three.
+  The Harbor rewards in `harbor/judge.py` follow them too (PASS 1, FAIL 0, WARN no `reward.json` by default).
 - `has_tool_call` and friends count only clean executions (no error, not paused), matching agno's
   `ToolCallScorer`.
 - Prompt text in `prompts.py` goes to the model verbatim (hence its E501 exemption). A wording change is a

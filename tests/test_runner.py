@@ -836,6 +836,30 @@ async def test_simulator_failure_is_a_harness_warning() -> None:
     assert collector.records[0].result.status is ScenarioStatus.WARN
 
 
+async def test_a_score_agno_cannot_read_is_a_harness_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ErrorText:
+        """The agno Agent inside JudgeScorer, answering with the error text arun returns for a failed model call."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def arun(self, prompt: str, **kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(content="Error code: 502 - Bad Gateway")
+
+    class ScoringJudge(FakeJudge):
+        async def score(self, state: ScenarioState) -> JudgeScore | None:
+            return await JudgeAgent.score(self, state)
+
+    monkeypatch.setattr("agno.scorer.judge.Agent", ErrorText)
+    judge = ScoringJudge(model=cast("Model", object()), score_threshold=7)
+
+    with pytest.raises(sim.SimulationStructuredOutputError):
+        await play(ReplyAdapter(), judge, script=[sim.user("hi"), sim.agent(), sim.judge()])
+
+    # Not a "runtime error" FAIL: the judge's grader broke, not the agent.
+    assert collector.records[0].result.status is ScenarioStatus.WARN
+
+
 async def test_generic_exception_is_recorded_as_a_runtime_error_and_reraised(caplog: pytest.LogCaptureFixture) -> None:
     class Boom(AgentAdapter):
         async def call(self, input: AgentInput) -> str:

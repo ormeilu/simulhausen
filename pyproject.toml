@@ -39,6 +39,10 @@ Repository = "https://github.com/ormeilu/simulhausen"
 Issues = "https://github.com/ormeilu/simulhausen/issues"
 Changelog = "https://github.com/ormeilu/simulhausen/blob/main/CHANGELOG.md"
 
+# `simulhausen harbor play|judge|run|export`: scenarios as Harbor tasks.
+[project.scripts]
+simulhausen = "simulhausen.cli:main"
+
 # pytest picks the plugin up automatically once the package is installed:
 # --sim-benchmark, --sim-report, --sim-report-md and the terminal summary.
 [project.entry-points.pytest11]

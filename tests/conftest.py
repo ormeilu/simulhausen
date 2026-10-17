@@ -1,4 +1,5 @@
-"""Shared fixtures: the process-global collector and config are reset around every test."""
+"""Shared fixtures: the process-global collector and config are reset around every test, and the environment
+variables that steer simulhausen are cleared or pointed at a temporary directory."""
 
 from collections.abc import Iterator
 from dataclasses import fields
@@ -26,6 +27,16 @@ def _isolated_globals() -> Iterator[None]:
     _reset_globals()
     yield
     _reset_globals()
+
+
+# Variables that pick the Harbor commands' target and models: a developer's shell must not redirect the tests.
+HARBOR_VARIABLES = ("SIMULHAUSEN_TARGET", "SIMULHAUSEN_MODEL", "SIMULHAUSEN_SIMULATOR_MODEL", "SIMULHAUSEN_JUDGE_MODEL")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in HARBOR_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

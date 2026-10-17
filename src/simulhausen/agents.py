@@ -454,7 +454,10 @@ class JudgeAgent:
         return decision.decision == "conclude"
 
     async def score(self, state: ScenarioState) -> JudgeScore | None:
-        """Grade the whole dialogue 1-10 with agno's hardened ``JudgeScorer`` (when enabled)."""
+        """Grade the whole dialogue 1-10 with agno's hardened ``JudgeScorer`` (when enabled).
+
+        Raises :class:`SimulationStructuredOutputError` when the scorer gets no usable grade.
+        """
         if self.score_threshold is None:
             return None
         scorer = JudgeScorer(
@@ -469,7 +472,14 @@ class JudgeAgent:
         )
         # agno fences both the run output and the reference answer with nonce
         # blocks, so dialogue text and RAG data cannot rewrite the judge's task.
-        score = await scorer.ascore(RunOutput(content=state.transcript()), expected=state.references_text() or None)
+        try:
+            score = await scorer.ascore(RunOutput(content=state.transcript()), expected=state.references_text() or None)
+        except ValueError as exc:
+            # agno raises a plain ValueError when the model's answer is no grade, e.g. the
+            # error text its arun returns for a failed model call: the harness broke, not the agent.
+            raise SimulationStructuredOutputError(
+                f"judge score returned no usable grade (scenario {state.name!r}): {exc}"
+            ) from exc
         raw_score = int((score.detail or {}).get("raw_score", round(score.value * 9 + 1)))
         return JudgeScore(
             value=score.value,

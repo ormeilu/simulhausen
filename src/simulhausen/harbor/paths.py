@@ -12,6 +12,7 @@ from typing import Final
 
 __all__ = [
     "AGENT_LOGS_DIR",
+    "AGENT_LOGS_SUBDIR",
     "DEFAULT_TRANSCRIPT",
     "IMAGE_SCENARIO_PATH",
     "RESULT_FILE",
@@ -23,8 +24,10 @@ __all__ = [
     "VERIFIER_LOGS_DIR",
 ]
 
-# `play` writes here; Harbor copies /logs/agent to <trial>/agent on the host.
-AGENT_LOGS_DIR: Final = "/logs/agent/simulhausen"
+# `play` writes here; Harbor copies /logs/agent to <trial>/agent on the host. The Harbor
+# agents pass play the AGENT_LOGS_SUBDIR of the agent log directory Harbor gives them as --out.
+AGENT_LOGS_SUBDIR: Final = "simulhausen"
+AGENT_LOGS_DIR: Final = f"/logs/agent/{AGENT_LOGS_SUBDIR}"
 # `judge` and `run` write here; Harbor reads reward.json from it.
 VERIFIER_LOGS_DIR: Final = "/logs/verifier"
 

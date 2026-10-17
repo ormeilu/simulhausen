@@ -1,11 +1,13 @@
-"""Shared fixtures: the process-global collector and config are reset around every test, and the environment
-variables that steer simulhausen are cleared or pointed at a temporary directory."""
+"""Shared fixtures: the process-global collector and config are reset around every test, the environment
+variables that steer simulhausen are cleared or pointed at a temporary directory, and the package looks installed
+from PyPI."""
 
 from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
 
 import pytest
+from harbor_support import installed_from
 from red_team_support import FakeLLM
 
 from simulhausen import SimulationConfig, collector, get_config
@@ -45,6 +47,13 @@ def cache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "response-cache"
     monkeypatch.setenv("SIMULHAUSEN_CACHE_DIR", str(path))
     return path
+
+
+@pytest.fixture(autouse=True)
+def _installed_from_an_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The simulhausen under test looks installed from PyPI: how the checkout itself is installed (editable, from an
+    archive) must not change the requirement that export and the Harbor agents put into task images."""
+    installed_from(monkeypatch, None)
 
 
 @pytest.fixture

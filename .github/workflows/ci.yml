@@ -42,3 +42,5 @@ jobs:
       - run: uv build
       - name: Smoke-test the wheel
         run: uv run --isolated --no-project --with dist/*.whl python -c "import simulhausen; print(simulhausen.__version__)"
+      - name: A plain install brings neither Harbor nor litellm
+        run: uv run --isolated --no-project --with dist/*.whl python -c "import importlib.util as u; assert not (u.find_spec('harbor') or u.find_spec('litellm'))"

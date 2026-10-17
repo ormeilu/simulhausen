@@ -1,4 +1,5 @@
-"""Fakes for the Harbor tests: a python target factory, a scripted simulator and judge, scenario files."""
+"""Fakes for the Harbor tests: a python target factory, a scripted simulator and judge, scenario files, and where
+the host's simulhausen was installed from."""
 
 from __future__ import annotations
 
@@ -23,9 +24,12 @@ from simulhausen import (
     UserSimulatorAgent,
     UserTurn,
 )
+from simulhausen.harbor import export as export_module
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 # The target every scenario in these tests talks to: support_agent() below.
 TARGET: dict[str, Any] = {"type": "python", "factory": "harbor_support:support_agent"}
@@ -179,3 +183,21 @@ def write_scenarios(path: Path, payload: dict[str, Any]) -> Path:
     """Write a scenario file as JSON (the loader treats it like the TOML form)."""
     path.write_text(json.dumps(payload))
     return path
+
+
+class FakeDistribution:
+    """``importlib.metadata.distribution("simulhausen")``, reduced to the ``direct_url.json`` export reads."""
+
+    def __init__(self, direct_url: dict[str, Any] | str | None) -> None:
+        self.direct_url = direct_url
+
+    def read_text(self, filename: str) -> str | None:
+        assert filename == "direct_url.json"
+        if self.direct_url is None or isinstance(self.direct_url, str):
+            return self.direct_url
+        return json.dumps(self.direct_url)
+
+
+def installed_from(monkeypatch: pytest.MonkeyPatch, direct_url: dict[str, Any] | str | None) -> None:
+    """Make the host's simulhausen look installed from ``direct_url`` (PEP 610's record; ``None``: an index)."""
+    monkeypatch.setattr(export_module, "distribution", lambda name: FakeDistribution(direct_url))

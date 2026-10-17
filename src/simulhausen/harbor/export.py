@@ -23,6 +23,7 @@ name (``"${OPENAI_API_KEY}"``), resolved by Harbor when the job starts.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -30,7 +31,9 @@ import shlex
 import shutil
 import tomllib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal
+from importlib.metadata import PackageNotFoundError, distribution
+from typing import TYPE_CHECKING, Any, Final, Literal
+from urllib.parse import urlsplit
 
 from simulhausen import __version__
 from simulhausen.harbor.errors import ConfigError
@@ -122,22 +125,56 @@ class ExportOptions:
 
 
 def default_simulhausen_spec(*, option: str = "--simulhausen-spec") -> str:
-    """``simulhausen==<this version>``, or plain ``simulhausen`` when this version is not on PyPI.
+    """The requirement that installs the simulhausen running here into a task image.
 
     ``export`` bakes it into the task image and the Harbor agents install it into an image
-    without the CLI, so both run the version installed here. ``option`` names the setting
-    that pins another requirement, for the warning.
+    without the CLI, so both run the code installed here. An install from a remote archive
+    or a git repository (PEP 610's ``direct_url.json``) is repeated as such, a git one at
+    its commit: its ``__version__`` is the last release, which may predate what it holds.
+    Otherwise ``simulhausen==<this version>``, or plain ``simulhausen`` when this version is
+    not on PyPI. ``option`` names the setting that pins another requirement, for the warnings.
     """
-    if "+" in __version__:
-        # A source tree ("0+unknown") or a local build: no such release to pin.
-        logger.warning(
-            "simulhausen %s is not a released version; the task image installs the latest release instead. "
-            "Pass %s to pin one.",
-            __version__,
-            option,
-        )
-        return "simulhausen"
-    return f"simulhausen=={__version__}"
+    fallback = "simulhausen" if "+" in __version__ else f"simulhausen=={__version__}"
+    direct = _direct_url()
+    if direct is None:
+        if "+" in __version__:
+            # A source tree ("0+unknown") or a local build: no such release to pin.
+            logger.warning(
+                "simulhausen %s is not a released version; the task image installs the latest release instead. "
+                "Pass %s to pin one.",
+                __version__,
+                option,
+            )
+        return fallback
+    url: str = direct["url"]
+    vcs = direct.get("vcs_info")
+    if urlsplit(url).scheme != "file":
+        if isinstance(vcs, dict):
+            if vcs.get("vcs") == "git" and isinstance(commit := vcs.get("commit_id"), str) and commit:
+                return f"simulhausen @ git+{url.removeprefix('git+')}@{commit}"
+        elif "archive_info" in direct:
+            return f"simulhausen @ {url}"
+    # A local directory, wheel or repository (an editable install of a checkout, for one) is out of a container's
+    # reach, and uv takes no VCS but git.
+    logger.warning(
+        "simulhausen is installed from %s, which a task container cannot install from; the task image installs "
+        "%s instead, which may lack what this install has. Pass %s to install the same code, e.g. a source "
+        "archive or a git URL.",
+        url,
+        fallback,
+        option,
+    )
+    return fallback
+
+
+def _direct_url() -> dict[str, Any] | None:
+    """PEP 610's record of where the simulhausen installed here came from; ``None`` for an index install."""
+    try:
+        text = distribution("simulhausen").read_text("direct_url.json")
+        data = json.loads(text) if text else None
+    except (PackageNotFoundError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("url"), str) else None
 
 
 def _toml_string(value: str) -> str:

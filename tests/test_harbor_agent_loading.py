@@ -98,7 +98,10 @@ def test_missing_harbor_says_what_to_install():
         (
             "simulhausen.harbor:SimulhausenAgent",
             SimulhausenAgent,
-            ['target={"type": "agentos", "base_url": "http://agent-api:7777"}', 'pip=["openai", "anthropic"]'],
+            [
+                'target={"type": "agentos", "base_url": "http://agent-api:7777", "agent_id": "support"}',
+                'pip=["openai", "anthropic"]',
+            ],
             None,
         ),
     ],
@@ -140,9 +143,30 @@ def test_parsed_kwargs_keep_their_json_types(tmp_path: Path):
     }
 
 
-def test_preflight_rejects_bad_kwargs_before_any_trial():
-    config = AgentConfig(name="simulhausen.harbor:AgentOSAgent", kwargs=parse_kwargs(["base_ur=http://x"]))
-    with pytest.raises(ValueError, match="Unknown option 'base_ur'"):
+@pytest.mark.parametrize(
+    ("import_path", "ak", "message"),
+    [
+        ("simulhausen.harbor:AgentOSAgent", ["base_ur=http://x"], "Unknown option 'base_ur'"),
+        ("simulhausen.harbor:AgentOSAgent", ["base_url=http://x"], "needs one of agent_id, team_id, workflow_id"),
+        (
+            "simulhausen.harbor:AgentOSAgent",
+            ["base_url=http://x", "agent_id=support", "team_id=desk"],
+            "got agent_id and team_id",
+        ),
+        ("simulhausen.harbor:SimulhausenAgent", ['target={"type": "a2a", "ulr": "http://x"}'], "missing url"),
+        (
+            "simulhausen.harbor:A2AAgent",
+            ["url=http://x", 'target={"histroy": "transcript"}'],
+            "unexpected keyword argument 'histroy'",
+        ),
+        ("simulhausen.harbor:SimulhausenAgent", ["play_timeout_sec=Infinity"], "play_timeout_sec"),
+        ("simulhausen.harbor:SimulhausenAgent", ["play_timeout_sec=NaN"], "play_timeout_sec"),
+        ("simulhausen.harbor:A2AAgent", ["url=http://x", "timeout=Infinity"], "timeout"),
+    ],
+)
+def test_preflight_rejects_bad_kwargs_before_any_trial(import_path: str, ak: list[str], message: str):
+    config = AgentConfig(name=import_path, kwargs=parse_kwargs(ak))
+    with pytest.raises(ValueError, match=message):
         AgentFactory.run_preflight(config)
 
 
@@ -206,12 +230,20 @@ def test_readme_verifier_mode_command_passes_harbor_dry_run(tmp_path: Path):
     assert "Dry run OK — 3 trial(s)" in output
 
 
-def test_dry_run_reports_a_bad_kwarg(tasks_dir: Path):
-    code, output = harbor(
-        "run", "-p", str(tasks_dir), "-a", "simulhausen.harbor:AgentOSAgent", "--ak", "agent_id=support", "--dry-run"
-    )
+@pytest.mark.parametrize(
+    ("ak", "message"),
+    [
+        (["agent_id=support"], "missing base_url"),
+        (["base_url=http://agent-api:7777"], "needs one of agent_id, team_id, workflow_id"),
+        (["base_url=http://agent-api:7777", 'target={"agent_id": "support", "type": "agentoss"}'], "agentoss"),
+    ],
+    ids=["missing base_url", "no agentos id", "misspelt type"],
+)
+def test_dry_run_reports_a_bad_kwarg(tasks_dir: Path, ak: list[str], message: str):
+    flags = [arg for value in ak for arg in ("--ak", value)]
+    code, output = harbor("run", "-p", str(tasks_dir), "-a", "simulhausen.harbor:AgentOSAgent", *flags, "--dry-run")
     assert code != 0
-    assert "missing base_url" in output
+    assert message in " ".join(output.split())  # Harbor wraps its error to the terminal width
 
 
 def test_example_job_config_passes_harbor_dry_run(tmp_path: Path, tasks_dir: Path, monkeypatch: pytest.MonkeyPatch):

@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import stat
 import subprocess
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from harbor_support import installed_from
 
 from simulhausen import __version__
 from simulhausen.harbor import ConfigError, load_scenarios
@@ -304,3 +306,107 @@ def test_default_simulhausen_spec(monkeypatch: pytest.MonkeyPatch, caplog: pytes
     monkeypatch.setattr(export_module, "__version__", "0+unknown")
     assert default_simulhausen_spec() == "simulhausen"
     assert "0+unknown is not a released version" in caplog.text
+
+
+ARCHIVE = "https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"
+COMMIT = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "expected"),
+    [
+        ({"url": ARCHIVE, "archive_info": {"hashes": {"sha256": "ab12"}}}, f"simulhausen @ {ARCHIVE}"),
+        (
+            {
+                "url": "https://github.com/ormeilu/simulhausen.git",
+                "vcs_info": {"vcs": "git", "commit_id": COMMIT, "requested_revision": "main"},
+            },
+            f"simulhausen @ git+https://github.com/ormeilu/simulhausen.git@{COMMIT}",
+        ),
+        (
+            {
+                "url": "git+ssh://git@github.com/ormeilu/simulhausen.git",
+                "vcs_info": {"vcs": "git", "commit_id": COMMIT},
+            },
+            f"simulhausen @ git+ssh://git@github.com/ormeilu/simulhausen.git@{COMMIT}",
+        ),
+    ],
+    ids=["archive", "git", "git url with its prefix"],
+)
+def test_default_spec_repeats_a_remote_install(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, direct_url: dict[str, Any], expected: str
+) -> None:
+    # Such an install reports the last release (0.2.0 has no CLI): pinning that would break the task image.
+    installed_from(monkeypatch, direct_url)
+    monkeypatch.setattr(export_module, "__version__", "0.2.0")
+    with caplog.at_level(logging.WARNING):
+        assert default_simulhausen_spec() == expected
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize(
+    "direct_url",
+    [
+        {"url": "file:///home/me/simulhausen", "dir_info": {"editable": True}},
+        {"url": "file:///home/me/simulhausen", "dir_info": {}},
+        {"url": "file:///tmp/simulhausen-0.3.0-py3-none-any.whl", "archive_info": {}},
+        {"url": "file:///home/me/simulhausen", "vcs_info": {"vcs": "git", "commit_id": COMMIT}},
+        {"url": "https://hg.example.com/simulhausen", "vcs_info": {"vcs": "hg", "commit_id": COMMIT}},
+        {"url": "https://github.com/ormeilu/simulhausen.git", "vcs_info": {"vcs": "git"}},
+    ],
+    ids=["editable checkout", "local directory", "local wheel", "local repository", "mercurial", "no commit"],
+)
+def test_default_spec_of_an_unreachable_install_falls_back_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, direct_url: dict[str, Any]
+) -> None:
+    installed_from(monkeypatch, direct_url)
+    monkeypatch.setattr(export_module, "__version__", "0.2.0")
+    with caplog.at_level(logging.WARNING):
+        assert default_simulhausen_spec() == "simulhausen==0.2.0"
+    assert f"installed from {direct_url['url']}, which a task container cannot install from" in caplog.text
+    assert "installs simulhausen==0.2.0 instead" in caplog.text
+    assert "Pass --simulhausen-spec to install the same code" in caplog.text
+
+
+def test_unreachable_install_of_an_unreleased_version_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    installed_from(monkeypatch, {"url": "file:///home/me/simulhausen", "dir_info": {"editable": True}})
+    monkeypatch.setattr(export_module, "__version__", "0+unknown")
+    with caplog.at_level(logging.WARNING):
+        assert default_simulhausen_spec(option="--ak simulhausen_spec=...") == "simulhausen"
+    assert len(caplog.records) == 1
+    assert "Pass --ak simulhausen_spec=... to install the same code" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "direct_url",
+    [None, "", "{truncated", '["a", "list"]', '{"archive_info": {}}', '{"url": 42}'],
+    ids=["index", "empty", "broken json", "json array", "no url", "url not a string"],
+)
+def test_default_spec_pins_the_version_without_a_usable_direct_url(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, direct_url: str | None
+) -> None:
+    installed_from(monkeypatch, direct_url)
+    monkeypatch.setattr(export_module, "__version__", "1.2.3")
+    with caplog.at_level(logging.WARNING):
+        assert default_simulhausen_spec() == "simulhausen==1.2.3"
+    assert caplog.text == ""
+
+
+def test_default_spec_without_installed_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    def not_installed(name: str) -> None:
+        raise export_module.PackageNotFoundError(name)
+
+    monkeypatch.setattr(export_module, "distribution", not_installed)
+    monkeypatch.setattr(export_module, "__version__", "1.2.3")
+    assert default_simulhausen_spec() == "simulhausen==1.2.3"
+
+
+def test_export_bakes_the_host_archive_into_the_image(
+    scenario_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed_from(monkeypatch, {"url": ARCHIVE, "archive_info": {}})
+    [task] = export_tasks([scenario_file], ExportOptions(output_dir=tmp_path / "tasks", ids=["greeting"]))
+    dockerfile = (task / "environment" / "Dockerfile").read_text()
+    assert f"RUN uv pip install --system --no-cache 'simulhausen @ {ARCHIVE}' openai\n" in dockerfile

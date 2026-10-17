@@ -14,9 +14,12 @@ from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.options import InstalledAgentOptions
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
+from harbor.models.job.result import JobStats
 from harbor.models.task.config import EnvironmentConfig
-from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
+from harbor.models.trial.paths import TrialPaths
+from harbor.models.trial.result import ModelInfo, TrialResult
 from harbor_agent_support import FakeEnvironment, write_json
+from harbor_support import installed_from
 
 import simulhausen
 from simulhausen.harbor import export as export_module
@@ -31,6 +34,7 @@ from simulhausen.harbor.agents import (
     summarize_transcript,
 )
 from simulhausen.harbor.export import UV_VERSION, default_simulhausen_spec
+from simulhausen.harbor.paths import AGENT_LOGS_DIR
 
 MakeAgent = Callable[..., SimulhausenAgent]
 
@@ -85,7 +89,7 @@ def make_agent(logs_dir: Path) -> MakeAgent:
     ("cls", "kwargs", "name"),
     [
         (SimulhausenAgent, {}, "simulhausen"),
-        (AgentOSAgent, {"base_url": "http://agent-api:7777"}, "simulhausen-agentos"),
+        (AgentOSAgent, {"base_url": "http://agent-api:7777", "agent_id": "support"}, "simulhausen-agentos"),
         (OpenAIChatAgent, {"base_url": "http://agent-api:8000/v1", "model": "m"}, "simulhausen-openai-chat"),
         (A2AAgent, {"url": "http://agent-api:9999"}, "simulhausen-a2a"),
         (LangGraphAgent, {"base_url": "http://agent-api:2024", "assistant_id": "agent"}, "simulhausen-langgraph"),
@@ -99,6 +103,20 @@ def test_names_are_fixed_per_class(make_agent: MakeAgent, cls: type[SimulhausenA
     # -m carries the identity of the agent under test into Harbor's agent__model__dataset key.
     assert info.model_info is not None
     assert info.model_info.name == "support-agent@v1"
+
+
+def test_model_label_keeps_its_slash(make_agent: MakeAgent):
+    # Harbor's own to_agent_info would record provider "acme" and name "support-agent@v3", and group by the name.
+    agent = make_agent(AgentOSAgent, model_name="acme/support-agent@v3", base_url="http://x", agent_id="support")
+    info = agent.to_agent_info()
+    assert info.model_info == ModelInfo(name="acme/support-agent@v3", provider=None)
+    # What Harbor groups the job's statistics (mean, pass@k, the metric) by.
+    stats = JobStats.from_trial_results([TrialResult.model_construct(trial_name="t", agent_info=info, source="tasks")])
+    assert list(stats.evals) == ["simulhausen-agentos__acme/support-agent@v3__tasks"]
+
+
+def test_no_model_label_means_no_model_info(make_agent: MakeAgent):
+    assert make_agent(SimulhausenAgent).to_agent_info().model_info is None
 
 
 def test_version_defaults_to_the_simulhausen_installed_here(make_agent: MakeAgent):
@@ -117,6 +135,28 @@ def test_unreleased_version_installs_the_latest_release(
     assert agent.simulhausen_spec == "simulhausen"
     assert agent.version() is None
     assert "Pass --ak simulhausen_spec=... to pin one" in caplog.text
+
+
+def test_default_spec_follows_an_archive_install_of_the_host(make_agent: MakeAgent, monkeypatch: pytest.MonkeyPatch):
+    # An archive install reports the last release as its version; pinning that would install a release without
+    # the CLI, so the container gets the same archive.
+    archive = "https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"
+    installed_from(monkeypatch, {"url": archive, "archive_info": {}})
+    agent = make_agent(SimulhausenAgent)
+    assert agent.simulhausen_spec == f"simulhausen @ {archive}"
+    assert agent.version() is None
+    assert f"'simulhausen @ {archive}' --with openai" in agent.install_script(install_uv=False)
+
+
+def test_local_install_of_the_host_names_the_agent_option(
+    make_agent: MakeAgent, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    installed_from(monkeypatch, {"url": "file:///home/me/simulhausen", "dir_info": {"editable": True}})
+    with caplog.at_level(logging.WARNING):
+        agent = make_agent(SimulhausenAgent)
+    assert agent.simulhausen_spec == f"simulhausen=={simulhausen.__version__}"
+    assert "installed from file:///home/me/simulhausen" in caplog.text
+    assert "Pass --ak simulhausen_spec=... to install the same code" in caplog.text
 
 
 def test_version_kwarg_selects_the_release_to_install(make_agent: MakeAgent):
@@ -151,7 +191,7 @@ def test_parse_version(output: str, expected: str | None):
 async def test_setup_skips_install_when_the_cli_is_present(make_agent: MakeAgent, environment: FakeEnvironment):
     environment.answer("command -v simulhausen", found("/usr/local/bin/simulhausen\n"))
     environment.answer("simulhausen --version", found("simulhausen 0.3.2\n"))
-    agent = make_agent(AgentOSAgent, base_url="http://agent-api:7777")
+    agent = make_agent(AgentOSAgent, base_url="http://agent-api:7777", agent_id="support")
 
     with environment.with_default_user("agent"):
         await agent.setup(environment)
@@ -161,6 +201,33 @@ async def test_setup_skips_install_when_the_cli_is_present(make_agent: MakeAgent
     # The version the container actually has wins over the pinned default.
     assert agent.version() == "0.3.2"
     assert agent.to_agent_info().version == "0.3.2"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "warned"),
+    [({"pip": ["anthropic", "google-genai>=1"]}, True), ({}, False), ({"pip": []}, False)],
+    ids=["explicit pip", "default pip", "explicitly none"],
+)
+async def test_explicit_pip_is_not_dropped_silently_when_the_cli_is_present(
+    make_agent: MakeAgent,
+    environment: FakeEnvironment,
+    caplog: pytest.LogCaptureFixture,
+    kwargs: dict[str, Any],
+    warned: bool,
+):
+    environment.answer("command -v simulhausen", found("/usr/local/bin/simulhausen\n"))
+    agent = make_agent(SimulhausenAgent, **kwargs)
+
+    with caplog.at_level(logging.WARNING):
+        await agent.setup(environment)
+
+    assert not any("uv tool install" in command for command in environment.commands)
+    if warned:
+        assert "pip requirements ['anthropic', 'google-genai>=1'] were not installed" in caplog.text
+        assert "the image already ships simulhausen" in caplog.text
+        assert "simulhausen harbor export ... --pip anthropic --pip 'google-genai>=1'" in caplog.text
+    else:
+        assert caplog.text == ""
 
 
 async def test_setup_installs_with_existing_uv(make_agent: MakeAgent, environment: FakeEnvironment):
@@ -330,6 +397,7 @@ async def test_play_timeout_runs_inside_the_container(make_agent: MakeAgent, env
 async def test_failed_play_raises_the_error_that_still_runs_the_verifier(
     make_agent: MakeAgent, environment: FakeEnvironment
 ):
+    # Play exits non-zero only when the harness failed (an error of the agent under test exits 0 and grades FAIL).
     # SingleStepTrial catches NonZeroAgentExitCodeError (and AgentTimeoutError), records it and verifies anyway;
     # any other exception from run() would skip the verifier and lose the WARN report.
     environment.answer(
@@ -337,15 +405,16 @@ async def test_failed_play_raises_the_error_that_still_runs_the_verifier(
         ExecResult(stdout="harness error: agent-api unreachable", stderr="", return_code=2),
         contains=True,
     )
-    agent = make_agent(AgentOSAgent, base_url="http://agent-api:7777")
+    agent = make_agent(AgentOSAgent, base_url="http://agent-api:7777", agent_id="support")
 
     with pytest.raises(NonZeroAgentExitCodeError, match="exit 2"):
         await agent.run("instruction", environment, AgentContext())
 
 
 def test_out_dir_follows_the_environment_log_dir(make_agent: MakeAgent):
+    # Where the exported verifier's judge reads the transcript by default.
     agent = make_agent(SimulhausenAgent)
-    assert agent.environment_out_dir.as_posix() == f"{EnvironmentPaths.agent_dir}/simulhausen"
+    assert agent.environment_out_dir.as_posix() == AGENT_LOGS_DIR
 
 
 # --- target -----------------------------------------------------------------------------------------------------
@@ -379,13 +448,15 @@ def test_explicit_target_wins_key_by_key(make_agent: MakeAgent):
         AgentOSAgent,
         base_url="http://agent-api:7777",
         agent_id="support",
-        target={"agent_id": "billing", "workflow_id": "refunds"},
+        history="session",
+        target={"agent_id": "billing", "history": "transcript", "metadata": {"run": "nightly"}},
     )
     assert agent.target == {
         "type": "agentos",
         "base_url": "http://agent-api:7777",
         "agent_id": "billing",
-        "workflow_id": "refunds",
+        "history": "transcript",
+        "metadata": {"run": "nightly"},  # no flat kwarg: an extra AgentOS form field
     }
 
 
@@ -401,7 +472,7 @@ def test_explicit_none_target_means_no_target(make_agent: MakeAgent):
 
 def test_target_type_mismatch_is_allowed_but_logged(make_agent: MakeAgent, caplog: pytest.LogCaptureFixture):
     with caplog.at_level(logging.WARNING):
-        agent = make_agent(AgentOSAgent, target={"type": "a2a", "url": "http://agent-api:9999", "base_url": "x"})
+        agent = make_agent(AgentOSAgent, target={"type": "a2a", "url": "http://agent-api:9999"})
     assert agent.target is not None
     assert agent.target["type"] == "a2a"
     assert "expects a 'agentos' target" in caplog.text
@@ -416,6 +487,8 @@ def test_target_type_mismatch_is_allowed_but_logged(make_agent: MakeAgent, caplo
         ({"target": {"type": "agentos", "x": float("nan")}}, "target must be plain JSON"),
         ({"base_url": "http://x"}, "Unknown option 'base_url'"),
         ({"play_timeout_sec": 0}, "play_timeout_sec"),
+        ({"play_timeout_sec": float("inf")}, "play_timeout_sec"),
+        ({"play_timeout_sec": float("nan")}, "play_timeout_sec"),
     ],
 )
 def test_invalid_kwargs_are_rejected(make_agent: MakeAgent, kwargs: dict[str, Any], message: str):
@@ -426,15 +499,102 @@ def test_invalid_kwargs_are_rejected(make_agent: MakeAgent, kwargs: dict[str, An
 @pytest.mark.parametrize(
     ("cls", "kwargs", "missing"),
     [
-        (AgentOSAgent, {"agent_id": "support"}, "missing base_url"),
+        (AgentOSAgent, {"agent_id": "support"}, "missing base_url: pass --ak base_url=... or put it into target"),
         (A2AAgent, {}, "missing url"),
         (LangGraphAgent, {"base_url": "http://agent-api:2024"}, "missing assistant_id"),
         (LangGraphAgent, {}, "missing base_url, assistant_id"),
+        (SimulhausenAgent, {"target": {"type": "openai-chat", "base_url": "http://x/v1"}}, "missing model: put it"),
     ],
 )
 def test_required_target_keys(make_agent: MakeAgent, cls: type[SimulhausenAgent], kwargs: dict, missing: str):
     with pytest.raises(ValueError, match=missing):
         make_agent(cls, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("cls", "kwargs", "message"),
+    [
+        (
+            AgentOSAgent,
+            {"base_url": "http://x"},
+            r"agentos target needs one of agent_id, team_id, workflow_id: pass --ak agent_id=\.\.\. \(or team_id",
+        ),
+        (
+            SimulhausenAgent,
+            {"target": {"type": "agentos", "base_url": "http://x"}},
+            "needs one of agent_id, team_id, workflow_id: put it into target",
+        ),
+        (
+            AgentOSAgent,
+            {"base_url": "http://x", "agent_id": "support", "target": {"workflow_id": "refunds"}},
+            "takes one of agent_id, team_id, workflow_id, got agent_id and workflow_id",
+        ),
+        (AgentOSAgent, {"base_url": "http://x", "team_id": "a", "workflow_id": "b"}, "got team_id and workflow_id"),
+        (AgentOSAgent, {"target": {"base_url": "http://x", "agnet_id": "support"}}, "needs one of agent_id"),
+        (
+            A2AAgent,
+            {"url": "http://x", "target": {"protocol_versoin": "1.0"}},
+            "target type 'a2a' .*a2a_adapter.*unexpected keyword argument 'protocol_versoin'",
+        ),
+        (
+            LangGraphAgent,
+            {"base_url": "http://x", "assistant_id": "agent", "target": {"input_kye_env": "KEY"}},
+            "unexpected keyword argument 'input_kye'",
+        ),
+        (SimulhausenAgent, {"target": {"type": "agentoss", "base_url": "http://x"}}, "unknown target type 'agentoss'"),
+        (SimulhausenAgent, {"target": {"type": ["agentos"]}}, r"unknown target type \['agentos'\]"),
+        (
+            A2AAgent,
+            {"url": "http://x", "headers": {"X-Tenant": "acme"}, "target": {"headers_env": "HEADERS"}},
+            "sets both headers and headers_env",
+        ),
+    ],
+    ids=[
+        "agentos without an id",
+        "agentos target without an id",
+        "agentos id from target and kwargs",
+        "agentos two flat ids",
+        "agentos misspelt id",
+        "a2a misspelt key",
+        "langgraph misspelt env key",
+        "unknown type",
+        "unhashable type",
+        "key and its env",
+    ],
+)
+def test_target_that_cannot_work_is_refused_by_the_options(
+    cls: type[SimulhausenAgent], kwargs: dict[str, Any], message: str
+):
+    # The options model alone, as Harbor's preflight validates it: no agent, no container.
+    with pytest.raises(ValueError, match=message):
+        cls.parse_options(kwargs)
+
+
+@pytest.mark.parametrize(
+    ("cls", "kwargs"),
+    [
+        (AgentOSAgent, {"base_url": "http://x", "target": {"agent_id_env": "AGENT_ID"}}),
+        (AgentOSAgent, {"workflow_id": "refunds", "target": {"base_url_env": "AGENTOS_URL"}}),
+        (SimulhausenAgent, {"target": {"type": "python", "factory": "app.targets:build", "anything": 1}}),
+        (OpenAIChatAgent, {"base_url": "http://x/v1"}),  # model comes from -m, which the options do not see
+    ],
+    ids=["env id", "env base_url", "python target", "model from -m"],
+)
+def test_target_checks_accept(cls: type[SimulhausenAgent], kwargs: dict[str, Any]):
+    cls.parse_options(kwargs)
+
+
+def test_defaults_are_checked_once_the_agent_has_them(make_agent: MakeAgent):
+    # -m becomes the target's model, which an a2a target does not take.
+    with pytest.raises(ValueError, match="unexpected keyword argument 'model'"):
+        make_agent(OpenAIChatAgent, model_name="m", target={"type": "a2a", "url": "http://x"})
+
+
+def test_a2a_takes_an_api_key_env(make_agent: MakeAgent, caplog: pytest.LogCaptureFixture):
+    with caplog.at_level(logging.WARNING):
+        agent = make_agent(A2AAgent, url="http://agent-api:9999", api_key_env="A2A_KEY")
+    assert agent.target == {"type": "a2a", "url": "http://agent-api:9999", "api_key_env": "A2A_KEY"}
+    assert caplog.text == ""
 
 
 def test_required_keys_may_come_from_target(make_agent: MakeAgent):
@@ -485,10 +645,12 @@ def test_literal_api_key_is_refused(make_agent: MakeAgent, kwargs: dict[str, Any
 def test_credential_looking_values_are_warned_about(make_agent: MakeAgent, caplog: pytest.LogCaptureFixture):
     with caplog.at_level(logging.WARNING):
         make_agent(
-            A2AAgent,
-            url="http://agent-api:9999",
+            AgentOSAgent,
+            base_url="http://agent-api:7777",
+            agent_id="support",
             headers={"Authorization": "Bearer abc", "X-Tenant": "acme"},
-            target={"auth_token": "abc", "token_env": "A2A_TOKEN"},
+            # AgentOS form fields
+            target={"auth_token": "abc", "token_env": "SESSION_TOKEN"},
         )
     assert "header 'Authorization' looks like a credential" in caplog.text
     assert "target key 'auth_token' holds a literal value" in caplog.text
@@ -546,6 +708,7 @@ TRANSCRIPT = {
                 {"tool_name": "issue_refund", "tool_call_error": True},
                 {"tool_name": "issue_refund", "requires_confirmation": True},
                 {"tool_name": "issue_refund"},
+                {"tool_name": "notify", "user_input_schema": "not a list"},  # agno cannot read it
                 {"tool_args": {}},
                 "not a tool",
             ],
@@ -567,7 +730,7 @@ def test_context_gets_the_transcript_summary(make_agent: MakeAgent, logs_dir: Pa
     write_json(logs_dir / "simulhausen" / "transcript.json", TRANSCRIPT)
     context = AgentContext()
 
-    make_agent(AgentOSAgent, base_url="http://agent-api:7777").populate_context_post_run(context)
+    make_agent(AgentOSAgent, base_url="http://agent-api:7777", agent_id="support").populate_context_post_run(context)
 
     assert context.metadata == {
         "scenario_id": "refund-duplicated-charge",
@@ -576,7 +739,7 @@ def test_context_gets_the_transcript_summary(make_agent: MakeAgent, logs_dir: Pa
         "turns": 2,
         "messages": 4,
         "tool_calls": ["lookup_order", "issue_refund"],
-        "failed_tool_calls": ["issue_refund", "issue_refund"],
+        "failed_tool_calls": ["issue_refund", "issue_refund", "notify"],
         "stop_reason": "max_turns",
         "harness_error": False,
         "error": None,
@@ -630,10 +793,12 @@ def test_corrupt_transcript_is_reported_not_raised(
     assert str(context.metadata["transcript_error"]).startswith(error)
 
 
+@pytest.mark.parametrize("transcript_format", ["other/9", "simulhausen-transcript/2"])
 def test_unknown_transcript_format_is_summarised_with_a_warning(
-    make_agent: MakeAgent, logs_dir: Path, caplog: pytest.LogCaptureFixture
+    make_agent: MakeAgent, logs_dir: Path, caplog: pytest.LogCaptureFixture, transcript_format: str
 ):
-    write_json(logs_dir / "simulhausen" / "transcript.json", {"format": "other/9", "turns": 1})
+    # A format the judge refuses, newer versions of this one included.
+    write_json(logs_dir / "simulhausen" / "transcript.json", {"format": transcript_format, "turns": 1})
     context = AgentContext()
     with caplog.at_level(logging.WARNING):
         make_agent(SimulhausenAgent).populate_context_post_run(context)
@@ -641,7 +806,7 @@ def test_unknown_transcript_format_is_summarised_with_a_warning(
     assert context.metadata["turns"] == 1
     assert context.metadata["messages"] == 0
     assert context.metadata["tool_calls"] == []
-    assert "unexpected transcript format 'other/9'" in caplog.text
+    assert f"unexpected transcript format {transcript_format!r}" in caplog.text
 
 
 def test_trajectory_is_mirrored_for_harbor_view(make_agent: MakeAgent, logs_dir: Path):

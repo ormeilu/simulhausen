@@ -22,6 +22,7 @@ refund a single charge.
 Both need simulhausen 0.3.0 or later. Until it is out, install from a source archive instead:
 `uv tool install harbor --with "simulhausen[harbor] @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"`
 and `uv tool install "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"`.
+Installed that way, the export and the Harbor agents put the same archive into the task images by themselves.
 
 Run every command from the repository root.
 
@@ -41,9 +42,10 @@ simulhausen harbor export examples/harbor/agentos/scenarios.toml --output-dir ta
 ```
 
 One directory per scenario: `tasks/refund-duplicated-charge/`, `tasks/refund-missing-order-number/`,
-`tasks/single-charge-not-refunded/`. With simulhausen installed from source, add
-`--simulhausen-spec "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"` so the task images install
-the same version.
+`tasks/single-charge-not-refunded/`. The images install the simulhausen that runs the export: its release, or the
+archive or git commit it was installed from. With an editable install of a checkout, which an image cannot reach,
+export warns and pins the checkout's version instead; add
+`--simulhausen-spec "simulhausen @ https://github.com/ormeilu/simulhausen/archive/refs/heads/main.tar.gz"` then.
 
 ## 3. Run it (agent mode)
 

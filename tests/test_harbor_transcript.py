@@ -1,3 +1,4 @@
+import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from simulhausen.harbor.transcript import (
     TranscriptError,
     build_transcript,
     read_transcript,
+    remove_play_outputs,
     trajectory,
     transcript_markdown,
     write_play_outputs,
@@ -68,7 +70,25 @@ def test_build_transcript_records_messages_tools_and_references() -> None:
     # Anything JSON cannot hold is kept as text, so the transcript is always writable.
     assert turn.tools[2]["tool_args"]["to"].startswith("<object object")
     assert turn.references[0]["references"] == [{"content": "policy", "meta_data": {"url": "u"}}]
+    assert transcript.injected == []
     assert transcript.finished
+
+
+def test_references_with_values_json_cannot_hold_are_kept_as_text(tmp_path: Path) -> None:
+    state = ScenarioState(thread_id="t", name="n", description="d")
+    meta = {"blob": b"\xff", "object": object(), "when": datetime.datetime(2024, 1, 1)}
+    state.add_agent_message("hi", references=[MessageReferences(query="q", references=[{"meta_data": meta}])])
+
+    transcript = build_transcript(
+        state, scenario=SCENARIO, simulhausen_version="1", checkpoints=[], stop_reason="script_end"
+    )
+    write_play_outputs(tmp_path, transcript)
+
+    kept = transcript.agent_turns[0].references[0]["references"][0]["meta_data"]
+    assert kept["blob"] == "b'\\xff'"
+    assert kept["object"].startswith("<object object")
+    assert kept["when"] == "2024-01-01 00:00:00"
+    assert read_transcript(tmp_path / "transcript.json").to_state().references[0].query == "q"
 
 
 def test_a_run_that_broke_before_it_began_has_an_empty_transcript() -> None:
@@ -114,6 +134,16 @@ def test_to_state_cuts_the_dialogue_at_a_limit() -> None:
     assert _transcript().to_state(2).current_turn == 1
 
 
+def test_to_state_can_replace_the_scenario_text() -> None:
+    assert (_transcript().to_state().name, _transcript().to_state().description) == (
+        SCENARIO.name,
+        SCENARIO.description,
+    )
+    state = _transcript().to_state(name="from the scenario file", description="the real description")
+
+    assert (state.name, state.description) == ("from the scenario file", "the real description")
+
+
 def _write(path: Path, payload: object) -> Path:
     path.write_text(json.dumps(payload) if not isinstance(payload, str) else payload)
     return path
@@ -141,11 +171,46 @@ def test_missing_transcript_says_the_agent_phase_did_not_run(tmp_path: Path) -> 
         read_transcript(tmp_path)
 
 
+def test_a_transcript_that_is_not_utf8_is_unreadable(tmp_path: Path) -> None:
+    path = tmp_path / "transcript.json"
+    path.write_bytes(json.dumps(_transcript().model_dump(mode="json"), ensure_ascii=False).encode("utf-16"))
+
+    with pytest.raises(TranscriptError, match="is not UTF-8"):
+        read_transcript(path)
+
+
+def test_files_are_utf8_with_lf_line_ends(tmp_path: Path) -> None:
+    state = _state()
+    state.add_user_message("größe ✅\nzweite zeile")
+    write_play_outputs(
+        tmp_path,
+        build_transcript(state, scenario=SCENARIO, simulhausen_version="1", checkpoints=[], stop_reason="script_end"),
+    )
+
+    for path in tmp_path.iterdir():
+        data = path.read_bytes()
+        assert "größe ✅".encode() in data, path.name
+        assert b"\r" not in data, path.name
+
+
+def test_remove_play_outputs(tmp_path: Path) -> None:
+    write_play_outputs(tmp_path / "out", _transcript())
+    (tmp_path / "out" / "notes.txt").write_text("mine")
+
+    remove_play_outputs(tmp_path / "out")
+    remove_play_outputs(tmp_path / "missing")
+
+    assert [path.name for path in (tmp_path / "out").iterdir()] == ["notes.txt"]
+
+
 def test_inconsistent_indices_and_tool_records_are_rejected(tmp_path: Path) -> None:
     good = _transcript().model_dump(mode="json")
     wrong_index = {**good, "agent_turns": [{"message_index": 0, "tools": []}]}
     past_end = {**good, "checkpoints": [{"kind": "judge", "step": 1, "message_count": 9}]}
     bad_tool = {**good, "agent_turns": [{"message_index": 1, "tools": [{"metrics": "fast"}]}]}
+    injected_user = {**good, "injected": [2]}
+    injected_past_end = {**good, "injected": [4]}
+    injected_negative = {**good, "injected": [-1]}
 
     with pytest.raises(TranscriptError, match="message 0 is not an agent message"):
         read_transcript(_write(tmp_path / "a.json", wrong_index))
@@ -153,12 +218,29 @@ def test_inconsistent_indices_and_tool_records_are_rejected(tmp_path: Path) -> N
         read_transcript(_write(tmp_path / "b.json", past_end))
     with pytest.raises(TranscriptError, match="agent message 1 has a tool or reference record agno cannot read"):
         read_transcript(_write(tmp_path / "c.json", bad_tool))
+    for name, payload in [("d", injected_user), ("e", injected_past_end)]:
+        with pytest.raises(TranscriptError, match=r"injected: message \d is not an agent message"):
+            read_transcript(_write(tmp_path / f"{name}.json", payload))
+    with pytest.raises(TranscriptError, match="greater than or equal to 0"):
+        read_transcript(_write(tmp_path / "f.json", injected_negative))
 
 
 def test_unknown_fields_from_newer_writers_are_ignored(tmp_path: Path) -> None:
     payload = {**_transcript().model_dump(mode="json"), "added_later": True}
 
     assert read_transcript(_write(tmp_path / "t.json", payload)).turns == 2
+
+
+def test_fields_a_writer_left_out_get_their_defaults(tmp_path: Path) -> None:
+    payload = _transcript(injected=[3]).model_dump(mode="json")
+    del payload["injected"]
+    # Written before checkpoints lost their unused `criteria`: still readable.
+    payload["checkpoints"][0]["criteria"] = []
+
+    transcript = read_transcript(_write(tmp_path / "t.json", payload))
+
+    assert transcript.injected == []
+    assert transcript.checkpoints == [Checkpoint(kind="check", step=2, message_count=2)]
 
 
 # -- trajectory ----------------------------------------------------------------
@@ -199,6 +281,19 @@ def test_trajectory_maps_messages_to_user_and_agent_steps() -> None:
     json.dumps(document)
 
 
+def test_trajectory_does_not_pass_injected_replies_off_as_the_agents() -> None:
+    document = trajectory(_transcript(injected=[3]))
+
+    assert [step["source"] for step in document["steps"]] == ["user", "agent", "user", "system"]
+    assert document["steps"][3] == {
+        "step_id": 4,
+        "source": "system",
+        "message": "you're welcome",
+        "extra": {"message_index": 3, "injected": True, "role": "assistant"},
+    }
+    assert "system steps are replies the script injected" in document["notes"]
+
+
 def test_trajectory_of_an_empty_dialogue_has_a_system_step() -> None:
     transcript = build_transcript(
         None, scenario=SCENARIO, simulhausen_version="1", checkpoints=[], stop_reason="error", error="no target"
@@ -225,6 +320,8 @@ def test_markdown_shows_the_dialogue_tools_checkpoints_and_outcome() -> None:
     assert text.index("## Outcome: PASS") < text.index("## Dialogue")
     assert "_Tools: `lookup_order` (success), `issue_refund` (error), `send_mail` (paused)_" in text
     assert text.index("> checkpoint: script[2] (check)") < text.index("thanks")
+    assert "**Agent (injected by the script)**" not in text
+    assert "**Agent (injected by the script)**\n\nyou're welcome" in transcript_markdown(_transcript(injected=[3]))
 
 
 def test_markdown_of_an_empty_dialogue() -> None:

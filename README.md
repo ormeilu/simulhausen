@@ -142,9 +142,9 @@ Every result gets one of three statuses:
 
 - `PASS`: every criterion passed and no assertion failed.
 - `FAIL`: a criterion failed, a script assertion failed, the judge score was below threshold, or `fail()` ran.
-- `WARN`: the scenario could not be verified. Either the harness broke (`SimulationHarnessError`: the judge or
-  the simulator returned no structured output, the model backend kept failing), or some criteria came back
-  inconclusive and none failed.
+- `WARN`: the scenario could not be verified. Either the harness broke (`SimulationHarnessError`: the judge, its
+  score or the simulator returned no structured output, the model backend kept failing), or some criteria came
+  back inconclusive and none failed.
 
 WARN is kept out of the pass rate on purpose. A broken judge says nothing about your agent, and counting it as
 a failure turns the pass rate into a measure of helper-LLM reliability. `pass_rate = PASS / (PASS + FAIL)`, and
@@ -529,7 +529,8 @@ keys are errors, so a typo cannot drop your criteria. Without a script the simul
 Checks replace script assertions. They run in the judge phase, `checks` on the whole dialogue and `check` steps
 on the dialogue up to their step: `tool_called`, `tool_not_called`, `tools_in_order` (`tools = [...]`, a
 subsequence) and `reply_contains` / `reply_not_contains` (`text = "..."`, case-insensitive unless
-`case_sensitive = true`, on any agent reply). Tool checks count only clean executions, like `has_tool_call`.
+`case_sensitive = true`, on the replies of the agent under test; a reply the script injected with `agent = "text"`
+or an assistant `message` does not count). Tool checks count only clean executions, like `has_tool_call`.
 
 Two things differ from a Python run. The dialogue is played without a judge, so a `proceed` ends only when the
 simulator reports the goal reached, at `max_turns` or after its `turns` (`min_turns` has no effect), and a
@@ -569,14 +570,19 @@ simulhausen harbor export SCENARIO_FILE... --output-dir DIR [--mode agent|verifi
                           [--rewards ...] [--warn-reward ...]
 ```
 
-`--id` picks a scenario when the file holds several. `play` writes `transcript.json` (what `judge` reads),
-`trajectory.json` (the same dialogue in Harbor's ATIF trajectory format) and `transcript.md` to
-`/logs/agent/simulhausen`. `judge` and `run` write `simulhausen-result.json` (status, reason, every verdict
-and check, the score, times), `transcript.md` with the verdicts on top and, last, `reward.json` to
-`/logs/verifier`. The commands work outside Harbor too, for example
+`--id` picks a scenario when the file holds several. `play` writes `transcript.json` (what `judge` reads; its
+`injected` lists the indices of the replies the script wrote instead of the agent under test), `trajectory.json`
+(the same dialogue in Harbor's ATIF trajectory format, with injected replies as system steps) and
+`transcript.md` to `/logs/agent/simulhausen`. `judge` and `run` write `simulhausen-result.json` (status,
+reason, every verdict and check, the score, times), `transcript.md` with the verdicts on top and, last,
+`reward.json` to `/logs/verifier`. The commands work outside Harbor too, for example
 `simulhausen harbor run --scenario scenarios.toml --id refund-duplicated-charge --out out/`; Python runs as
 `python -m simulhausen` as well. From Python, `simulhausen.harbor.load_scenarios(path)` returns a file's
 scenarios as `ScenarioSpec` models and `simulhausen.harbor.build_target(config)` builds a target's adapter.
+
+Each command first deletes what an earlier run left in its `--out`: `play` the three dialogue files, `judge`
+`reward.json` and `simulhausen-result.json`, `run` all five. A configuration error then leaves no old dialogue
+for `judge` to grade and no old reward for Harbor to read.
 
 Exit codes: 0 when done (for `judge` and `run`, a reward was written), 1 for a usage or configuration error
 (nothing was played or graded), 2 when the scenario could not be verified (`play` did not finish the dialogue,
@@ -593,11 +599,13 @@ script order). An inconclusive criterion gets no key, since Harbor takes only nu
 0/1 key for pass@k, so detailed rewards switch it off.
 
 PASS, FAIL and WARN follow the usual rules. A dialogue the harness broke (a backend that kept failing, a
-simulator without structured output), a judge that breaks, a missing transcript and inconclusive criteria
-with none failed are WARN; an error of the agent under test is FAIL. With `--warn-reward skip` (the default) a
-WARN writes no `reward.json`: Harbor records a verifier error, so WARN stays out of the mean the way it stays
-out of simulhausen's pass rate (Harbor's default metrics count a missing reward as 0, so use a metric that
-skips them, such as the one in `simulhausen-harbor`). `--warn-reward zero` writes `{"reward": 0}` instead.
+simulator without structured output), a judge that breaks (no structured output, no usable score, any other
+error while grading) unless a failure was already certain, a missing transcript and inconclusive criteria with
+none failed are WARN; an error of the agent under test is FAIL. `simulhausen-result.json` is written in every
+case. With `--warn-reward skip` (the default) a WARN writes no `reward.json`: Harbor records a verifier error,
+so WARN stays out of the mean the way it stays out of simulhausen's pass rate (Harbor's default metrics count a
+missing reward as 0, so use a metric that skips them, such as the one in `simulhausen-harbor`).
+`--warn-reward zero` writes `{"reward": 0}` instead.
 
 ### Exporting tasks
 

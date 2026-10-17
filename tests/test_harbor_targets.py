@@ -61,6 +61,15 @@ async def test_python_factory_may_return_or_be_an_agno_runnable() -> None:
     assert (await _ask(adapter_attr)).content == "agent reply 1: hello"
 
 
+async def test_a_class_with_arun_is_called_like_any_factory() -> None:
+    """An agno Agent subclass has arun too, but naming the class means: build the agent with these options."""
+    plain = build_target({"type": "python", "factory": "harbor_support:AgnoLike"})
+    with_options = build_target({"type": "python", "factory": "harbor_support:AgnoLike", "greeting": "hey"})
+
+    assert (await _ask(plain)).content == "agno says: hello"
+    assert (await _ask(with_options)).content == "hey: hello"
+
+
 @pytest.mark.parametrize(
     ("config", "message"),
     [
@@ -73,7 +82,15 @@ async def test_python_factory_may_return_or_be_an_agno_runnable() -> None:
             {"type": "python", "factory": "harbor_support:broken_factory"},
             "returned str; it must return an AgentAdapter",
         ),
+        (
+            {"type": "python", "factory": "harbor_support:class_factory"},
+            "target factory 'harbor_support:class_factory' returned the class AgnoLike; it must return",
+        ),
         ({"type": "python", "factory": "harbor_support:support_agent", "colour": "red"}, "rejected the options"),
+        (
+            {"type": "python", "factory": "harbor_support:picky_factory", "mode": "warp"},
+            "target factory 'harbor_support:picky_factory' rejected the options ['mode']: mode must be 'fast' or",
+        ),
         (
             {"type": "python", "factory": "harbor_support:agno_like_instance", "colour": "red"},
             "is not callable, so it takes no options: ['colour']",
@@ -193,7 +210,8 @@ async def test_agentos_target_reads_its_key_from_the_environment(monkeypatch: py
 
 
 def test_agentos_target_option_errors_name_the_type() -> None:
-    with pytest.raises(ValueError, match="agent_id"):
+    # The adapter's own ValueError, wrapped: the CLI reports a ConfigError and exits 1 instead of crashing.
+    with pytest.raises(ConfigError, match=r"target type 'agentos' rejected the options \['base_url'\]: .*agent_id"):
         build_target({"type": "agentos", "base_url": "http://agent-api:7777"})
     with pytest.raises(ConfigError, match="target type 'openai-chat' rejected the options"):
         build_target({"type": "openai-chat", "base_url": "http://llm:8000/v1", "modle": "m"})
@@ -250,6 +268,10 @@ def test_target_source_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         resolve_target_config(spec, target_json="[1]")
     with pytest.raises(ConfigError, match="cannot read --target-file"):
         resolve_target_config(spec, target_file=tmp_path / "missing.json")
+    latin1 = tmp_path / "latin1.json"
+    latin1.write_bytes('{"type": "python", "factory": "café:make"}'.encode("latin-1"))
+    with pytest.raises(ConfigError, match=r"--target-file .*latin1\.json is not UTF-8"):
+        resolve_target_config(spec, target_file=latin1)
     monkeypatch.setenv("SIMULHAUSEN_TARGET", "nope")
     with pytest.raises(ConfigError, match="\\$SIMULHAUSEN_TARGET is not valid JSON"):
         resolve_target_config(spec)

@@ -70,11 +70,24 @@ def broken_factory(**options: Any) -> str:
     return "not an adapter"
 
 
+def picky_factory(mode: str = "fast") -> sim.AgentAdapter:
+    """A python target factory that checks its options and raises ``ValueError``, as the HTTP adapters do."""
+    raise ValueError(f"mode must be 'fast' or 'slow', got {mode!r}")
+
+
 class AgnoLike:
-    """Stands in for an agno Agent: has ``arun``."""
+    """Stands in for an agno Agent (or a subclass of one): has ``arun``, and calling the class builds one."""
+
+    def __init__(self, greeting: str = "agno says") -> None:
+        self.greeting = greeting
 
     async def arun(self, input: Any, **kwargs: Any) -> Any:
-        return SimpleNamespace(content=f"agno says: {input}", status=None, tools=None, references=None)
+        return SimpleNamespace(content=f"{self.greeting}: {input}", status=None, tools=None, references=None)
+
+
+def class_factory() -> type[AgnoLike]:
+    """A python target factory that returns the class instead of an agent (a forgotten call)."""
+    return AgnoLike
 
 
 agno_like_instance = AgnoLike()
@@ -130,6 +143,8 @@ class ScriptedJudge(JudgeAgent):
         self.errors = errors or {}
         self.calls: list[tuple[list[str], int, str | None]] = []
         self.score_calls = 0
+        # (name, description) of the state every judge and score call saw.
+        self.scenarios: list[tuple[str, str]] = []
 
     async def judge(
         self,
@@ -139,6 +154,7 @@ class ScriptedJudge(JudgeAgent):
         additional_context: str | None = None,
     ) -> JudgeVerdict:
         used = list(self.criteria if criteria is None else criteria)
+        self.scenarios.append((state.name, state.description))
         if (error := self.errors.get(len(self.calls))) is not None:
             raise error
         self.calls.append((used, len(state.messages), additional_context))
@@ -150,6 +166,7 @@ class ScriptedJudge(JudgeAgent):
 
     async def score(self, state: ScenarioState) -> JudgeScore | None:
         self.score_calls += 1
+        self.scenarios.append((state.name, state.description))
         if self.score_threshold is None or self.raw_score is None:
             return None
         raw = self.raw_score

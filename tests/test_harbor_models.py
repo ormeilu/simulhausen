@@ -1,3 +1,4 @@
+import os
 from typing import cast
 
 import pytest
@@ -5,15 +6,14 @@ from agno.models.base import Model
 
 from simulhausen.harbor import ConfigError
 from simulhausen.harbor import models as models_module
-from simulhausen.harbor.models import build_model, model_string, resolve_model
+from simulhausen.harbor.models import MODEL_ENV, build_model, model_string, resolve_model
+from simulhausen.harbor.targets import TARGET_ENV
 
-MODEL_VARIABLES = ["SIMULHAUSEN_SIMULATOR_MODEL", "SIMULHAUSEN_JUDGE_MODEL", "SIMULHAUSEN_MODEL"]
 
-
-@pytest.fixture(autouse=True)
-def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in MODEL_VARIABLES:
-        monkeypatch.delenv(name, raising=False)
+def test_the_shell_cannot_redirect_the_tests() -> None:
+    """conftest clears the variables that pick models and targets, whatever the developer's shell exports."""
+    variables = {*MODEL_ENV["simulator"], *MODEL_ENV["judge"], TARGET_ENV}
+    assert sorted(name for name in variables if name in os.environ) == []
 
 
 def test_precedence_cli_then_role_variable_then_shared_variable_then_scenario(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1035,6 +1035,28 @@ async def test_score_without_a_model_explains_what_to_configure(scorer: ScorerRe
         await JudgeAgent(["c"], score_threshold=5).score(_state())
 
 
+class ErrorTextEvaluator:
+    """Stands in for the agno Agent inside JudgeScorer: answers with the error text agno's arun returns when the
+    model call fails, which is no grade."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        pass
+
+    async def arun(self, prompt: str, **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(content="Error code: 502 - Bad Gateway")
+
+
+async def test_a_score_agno_cannot_read_is_a_structured_output_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agno.scorer.judge.Agent", ErrorTextEvaluator)
+
+    with pytest.raises(sim.SimulationStructuredOutputError) as info:
+        await JudgeAgent(["c"], MODEL, score_threshold=7).score(_state())
+
+    assert str(info.value).startswith("judge score returned no usable grade (scenario 'refund')")
+    assert "Error code: 502 - Bad Gateway" in str(info.value)
+    assert isinstance(info.value.__cause__, ValueError)
+
+
 async def test_score_still_grades_the_whole_dialogue_above_the_threshold(scorer: ScorerRecorder) -> None:
     state = _state()
 

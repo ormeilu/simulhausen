@@ -249,6 +249,27 @@ def test_scenario_errors_stop_the_export_before_anything_is_written(scenario_fil
     assert not (tmp_path / "out").exists()
 
 
+def test_ids_that_differ_only_in_case_are_rejected(scenario_file: Path, tmp_path: Path) -> None:
+    """On macOS and Windows "Refund" and "refund" are one task directory: the second export would replace the first."""
+    other_file = tmp_path / "other.json"
+    other_file.write_text(json.dumps({"id": "Refund", "name": "r", "description": "d", "criteria": ["c"]}))
+    same_file = tmp_path / "same.json"
+    same_file.write_text(
+        json.dumps(
+            {"scenarios": [{"id": f"a{suffix}", "name": "a", "description": "d", "criteria": ["c"]} for suffix in "bB"]}
+        )
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=r"scenario ids 'refund' \(.*scenarios\.toml\) and 'Refund' \(.*other\.json\) differ only in case",
+    ):
+        export_tasks([scenario_file, other_file], ExportOptions(output_dir=tmp_path / "out"))
+    with pytest.raises(ConfigError, match=r"'ab' .* and 'aB' .* differ only in case"):
+        export_tasks([same_file], ExportOptions(output_dir=tmp_path / "out"))
+    assert not (tmp_path / "out").exists()
+
+
 def test_overwrite_replaces_only_generated_tasks(scenario_file: Path, tmp_path: Path) -> None:
     options = ExportOptions(output_dir=tmp_path, ids=["greeting"])
     export_tasks([scenario_file], options)

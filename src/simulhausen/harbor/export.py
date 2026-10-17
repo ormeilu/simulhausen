@@ -37,7 +37,7 @@ from simulhausen.harbor.errors import ConfigError
 from simulhausen.harbor.paths import IMAGE_SCENARIO_PATH, TESTS_SCENARIO_PATH, VERIFIER_LOGS_DIR
 from simulhausen.harbor.spec import load_scenarios
 from simulhausen.harbor.targets import TARGET_ENV
-from simulhausen.harbor.transcript import write_json
+from simulhausen.harbor.transcript import write_json, write_text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -262,8 +262,8 @@ def _validate(options: ExportOptions) -> None:
 def _generated_task(directory: Path) -> bool:
     """Whether ``directory`` holds a task this command generated (and may replace)."""
     try:
-        config = tomllib.loads((directory / "task.toml").read_text())
-    except (OSError, tomllib.TOMLDecodeError):
+        config = tomllib.loads((directory / "task.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return False
     return config.get("metadata", {}).get("generator") == GENERATOR
 
@@ -271,13 +271,22 @@ def _generated_task(directory: Path) -> bool:
 def _select(scenario_files: Sequence[Path], ids: Sequence[str] | None) -> list[ScenarioSpec]:
     specs: list[ScenarioSpec] = []
     origin: dict[str, Path] = {}
+    # Ids by their casefold: "Refund" and "refund" would share a task directory on a
+    # case-insensitive file system (macOS, Windows).
+    folded: dict[str, str] = {}
     for path in scenario_files:
         for spec in load_scenarios(path):
             if spec.id in origin:
                 raise ConfigError(
                     f"scenario id {spec.id!r} is in both {origin[spec.id]} and {path}; task directories need unique ids"
                 )
+            if (other := folded.get(spec.id.casefold())) is not None:
+                raise ConfigError(
+                    f"scenario ids {other!r} ({origin[other]}) and {spec.id!r} ({path}) differ only in case; "
+                    "task directories need ids that stay apart on case-insensitive file systems"
+                )
             origin[spec.id] = path
+            folded[spec.id.casefold()] = spec.id
             specs.append(spec)
     if ids is not None:
         unknown = [scenario_id for scenario_id in ids if scenario_id not in origin]
@@ -313,16 +322,16 @@ def export_tasks(scenario_files: Sequence[Path], options: ExportOptions) -> list
         environment, tests = task_dir / "environment", task_dir / "tests"
         environment.mkdir(parents=True)
         tests.mkdir()
-        (task_dir / "task.toml").write_text(render_task_toml(spec, options))
-        (task_dir / "instruction.md").write_text(spec.description.rstrip() + "\n")
-        (environment / "Dockerfile").write_text(render_dockerfile(options, simulhausen_spec))
+        write_text(task_dir / "task.toml", render_task_toml(spec, options))
+        write_text(task_dir / "instruction.md", spec.description.rstrip() + "\n")
+        write_text(environment / "Dockerfile", render_dockerfile(options, simulhausen_spec))
         if options.mode == "agent":
             write_json(environment / "scenario.json", spec.for_agent_phase().to_json_dict())
         if options.compose is not None:
             shutil.copyfile(options.compose, environment / "docker-compose.yaml")
         write_json(tests / "scenario.json", spec.to_json_dict())
         test_sh = tests / "test.sh"
-        test_sh.write_text(render_test_sh(options))
+        write_text(test_sh, render_test_sh(options))
         test_sh.chmod(0o755)
         written.append(task_dir)
     return written

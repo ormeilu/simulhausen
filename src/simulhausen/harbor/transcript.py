@@ -6,8 +6,9 @@ verifier's ``judge`` grades what was said. ``transcript.json`` is the hand-over 
 them, so it carries everything the judge needs to rebuild the
 :class:`~simulhausen.ScenarioState`: the messages, the tool executions and RAG references
 of every agent turn (agno's own ``ToolExecution.to_dict()`` and ``MessageReferences``
-shapes, so ``has_tool_call`` and the judge's evidence work as in a live run), where the
-script's checkpoints sat, and how the dialogue ended.
+shapes, so ``has_tool_call`` and the judge's evidence work as in a live run), which
+replies the script injected, where the script's checkpoints sat, and how the dialogue
+ended.
 
 ``trajectory.json`` is the same dialogue in Harbor's ATIF trajectory format (the one
 ``harbor view`` renders from an agent's ``trajectory.json``), and ``transcript.md`` is for
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Self
 
 from agno.models.message import MessageReferences
 from agno.models.response import ToolExecution
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError, model_validator
 
 from simulhausen.harbor.paths import TRAJECTORY_FILE, TRANSCRIPT_FILE, TRANSCRIPT_MARKDOWN_FILE
 from simulhausen.types import ScenarioState
@@ -43,10 +44,12 @@ __all__ = [
     "TranscriptMessage",
     "build_transcript",
     "read_transcript",
+    "remove_play_outputs",
     "trajectory",
     "transcript_markdown",
     "write_json",
     "write_play_outputs",
+    "write_text",
 ]
 
 TRANSCRIPT_FORMAT: Final = "simulhausen-transcript/1"
@@ -94,13 +97,12 @@ class Checkpoint(_Record):
 
     ``step`` is the 0-based index of the step in the scenario's ``script``; the judge
     phase takes its criteria or check from the scenario file by that index and grades the
-    first ``message_count`` messages. ``criteria`` stays empty in ``play`` output.
+    first ``message_count`` messages.
     """
 
     kind: Literal["judge", "check"]
     step: int = Field(ge=0)
     message_count: int = Field(ge=0)
-    criteria: list[str] = Field(default_factory=list)
 
 
 class Transcript(_Record):
@@ -112,6 +114,9 @@ class Transcript(_Record):
     thread_id: str
     messages: list[TranscriptMessage] = Field(default_factory=list)
     agent_turns: list[AgentTurnRecord] = Field(default_factory=list)
+    # Indices of the assistant messages the script wrote (`agent = "text"`, an assistant
+    # `message`) rather than the agent under test; reply checks skip them.
+    injected: list[NonNegativeInt] = Field(default_factory=list)
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     # Agent turns played (ScenarioState.current_turn).
     turns: int = Field(default=0, ge=0)
@@ -126,27 +131,41 @@ class Transcript(_Record):
     @model_validator(mode="after")
     def _indices_in_range(self) -> Self:
         for turn in self.agent_turns:
-            if turn.message_index >= len(self.messages) or self.messages[turn.message_index].role != "assistant":
+            if not self._is_assistant(turn.message_index):
                 raise ValueError(f"agent_turns: message {turn.message_index} is not an agent message")
+        for index in self.injected:
+            if not self._is_assistant(index):
+                raise ValueError(f"injected: message {index} is not an agent message")
         for checkpoint in self.checkpoints:
             if checkpoint.message_count > len(self.messages):
                 raise ValueError(f"checkpoints: message_count {checkpoint.message_count} is past the dialogue")
         return self
+
+    def _is_assistant(self, index: int) -> bool:
+        return index < len(self.messages) and self.messages[index].role == "assistant"
 
     @property
     def finished(self) -> bool:
         """The dialogue was played to its end (no harness failure, no runtime error)."""
         return not self.harness_error and self.stop_reason != "error"
 
-    def to_state(self, limit: int | None = None) -> ScenarioState:
+    def to_state(
+        self, limit: int | None = None, *, name: str | None = None, description: str | None = None
+    ) -> ScenarioState:
         """The dialogue as a :class:`ScenarioState`, cut to the first ``limit`` messages.
 
         Agent messages get their tool executions and references back through
         ``add_agent_message``, so tool turns and the judge's evidence match the live run.
-        Raises :class:`TranscriptError` for tool or reference records agno cannot read.
+        ``name`` and ``description`` replace the scenario text the transcript recorded (the
+        judge passes its own scenario file's). Raises :class:`TranscriptError` for tool or
+        reference records agno cannot read.
         """
         messages = self.messages if limit is None else self.messages[:limit]
-        state = ScenarioState(thread_id=self.thread_id, name=self.scenario.name, description=self.scenario.description)
+        state = ScenarioState(
+            thread_id=self.thread_id,
+            name=self.scenario.name if name is None else name,
+            description=self.scenario.description if description is None else description,
+        )
         turns = {turn.message_index: turn for turn in self.agent_turns}
         for index, message in enumerate(messages):
             if message.role == "user":
@@ -178,6 +197,7 @@ def build_transcript(
     simulhausen_version: str,
     checkpoints: Sequence[Checkpoint],
     stop_reason: StopReason,
+    injected: Sequence[int] = (),
     harness_error: bool = False,
     error: str | None = None,
     total_time: float = 0.0,
@@ -199,15 +219,16 @@ def build_transcript(
                 turns.setdefault(index, AgentTurnRecord(message_index=index)).tools.append(_plain(tool.to_dict()))
         for ref in state.references:
             if (index := state._origins.get(id(ref))) is not None:
-                turns.setdefault(index, AgentTurnRecord(message_index=index)).references.append(
-                    ref.model_dump(mode="json")
-                )
+                # meta_data may hold anything (bytes, custom objects): the same fallback as the tools.
+                reference = _plain(ref.model_dump())
+                turns.setdefault(index, AgentTurnRecord(message_index=index)).references.append(reference)
     return Transcript(
         simulhausen_version=simulhausen_version,
         scenario=scenario,
         thread_id=thread_id,
         messages=messages,
         agent_turns=[turns[index] for index in sorted(turns)],
+        injected=list(injected),
         checkpoints=list(checkpoints),
         turns=current_turn,
         stop_reason=stop_reason,
@@ -222,7 +243,7 @@ def build_transcript(
 def read_transcript(path: Path) -> Transcript:
     """Read ``transcript.json``; raises :class:`TranscriptError` saying why it cannot be used."""
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise TranscriptError(
             f"no transcript at {path}: the agent phase did not run, or failed before the dialogue started "
@@ -230,6 +251,8 @@ def read_transcript(path: Path) -> Transcript:
         ) from None
     except OSError as exc:
         raise TranscriptError(f"cannot read the transcript {path}: {exc.strerror or exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise TranscriptError(f"the transcript {path} is not UTF-8: {exc}") from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -253,21 +276,27 @@ def _tool_status(tool: ToolExecution) -> str:
 
 
 def trajectory(transcript: Transcript) -> dict[str, Any]:
-    """The dialogue as a Harbor ATIF trajectory: one ``user`` or ``agent`` step per message.
+    """The dialogue as a Harbor ATIF trajectory: one ``user``, ``agent`` or ``system`` step per message.
 
-    An agent step lists the tool executions of its turn as ``tool_calls`` with their
-    results as the ``observation``; each step's ``extra`` holds the message index and the
-    status of each call (``success``, ``error`` or ``paused``).
+    Replies of the agent under test are ``agent`` steps; one lists the tool executions of
+    its turn as ``tool_calls`` with their results as the ``observation``. Replies the
+    script injected are ``system`` steps with ``injected`` and ``role`` in their
+    ``extra``. Each step's ``extra`` holds the message index and the status of each call
+    (``success``, ``error`` or ``paused``).
     """
     turns = {turn.message_index: turn for turn in transcript.agent_turns}
+    injected = set(transcript.injected)
     steps: list[dict[str, Any]] = []
     for index, message in enumerate(transcript.messages):
         extra: dict[str, Any] = {"message_index": index}
-        step: dict[str, Any] = {
-            "step_id": len(steps) + 1,
-            "source": "user" if message.role == "user" else "agent",
-            "message": message.content,
-        }
+        source = "user" if message.role == "user" else "agent"
+        if index in injected:
+            # ATIF knows only system, user and agent steps. The script wrote this reply, not the
+            # agent under test, so it becomes a system step; extra keeps that the dialogue showed
+            # it as an assistant message.
+            source = "system"
+            extra.update(injected=True, role="assistant")
+        step: dict[str, Any] = {"step_id": len(steps) + 1, "source": source, "message": message.content}
         turn = turns.get(index)
         if turn is not None and turn.tools:
             calls: list[dict[str, Any]] = []
@@ -305,7 +334,7 @@ def trajectory(transcript: Transcript) -> dict[str, Any]:
         "agent": agent,
         "steps": steps,
         "notes": "simulhausen scenario dialogue: user steps come from the user simulator or the script, "
-        "agent steps from the agent under test",
+        "agent steps from the agent under test, system steps are replies the script injected",
         "final_metrics": {"total_steps": len(steps)},
         "extra": {
             "scenario": transcript.scenario.model_dump(),
@@ -340,6 +369,7 @@ def transcript_markdown(transcript: Transcript, outcome: str | None = None) -> s
     if not transcript.messages:
         lines += ["_No messages were recorded._", ""]
     turns = {turn.message_index: turn for turn in transcript.agent_turns}
+    injected = set(transcript.injected)
     marks: dict[int, list[Checkpoint]] = {}
     for checkpoint in transcript.checkpoints:
         marks.setdefault(checkpoint.message_count, []).append(checkpoint)
@@ -348,7 +378,10 @@ def transcript_markdown(transcript: Transcript, outcome: str | None = None) -> s
         if index == len(transcript.messages):
             break
         message = transcript.messages[index]
-        lines += [f"**{'User' if message.role == 'user' else 'Agent'}**", "", message.content, ""]
+        speaker = "User" if message.role == "user" else "Agent"
+        if index in injected:
+            speaker += " (injected by the script)"
+        lines += [f"**{speaker}**", "", message.content, ""]
         if (turn := turns.get(index)) and turn.tools:
             calls = [ToolExecution.from_dict(record) for record in turn.tools]
             listed = ", ".join(f"`{tool.tool_name or 'unknown'}` ({_tool_status(tool)})" for tool in calls)
@@ -356,12 +389,17 @@ def transcript_markdown(transcript: Transcript, outcome: str | None = None) -> s
     return "\n".join(lines).rstrip() + "\n"
 
 
+def write_text(path: Path, text: str) -> None:
+    """Write ``text`` as UTF-8 with LF line ends, whatever the locale and the platform."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def write_json(path: Path, payload: object) -> None:
     """Write ``payload`` as JSON, atomically: play rewrites its transcript after every step,
     and a kill in the middle of a write must leave the previous version, not half of one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f".{path.name}.partial")
-    partial.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    write_text(partial, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     os.replace(partial, path)
 
 
@@ -369,4 +407,10 @@ def write_play_outputs(out_dir: Path, transcript: Transcript) -> None:
     """Write ``transcript.json``, ``trajectory.json`` and ``transcript.md`` into ``out_dir``."""
     write_json(out_dir / TRANSCRIPT_FILE, transcript.model_dump(mode="json"))
     write_json(out_dir / TRAJECTORY_FILE, trajectory(transcript))
-    (out_dir / TRANSCRIPT_MARKDOWN_FILE).write_text(transcript_markdown(transcript))
+    write_text(out_dir / TRANSCRIPT_MARKDOWN_FILE, transcript_markdown(transcript))
+
+
+def remove_play_outputs(out_dir: Path) -> None:
+    """Delete what an earlier ``play`` wrote into ``out_dir``, so a judge never grades an old dialogue as new."""
+    for name in (TRANSCRIPT_FILE, TRAJECTORY_FILE, TRANSCRIPT_MARKDOWN_FILE):
+        (out_dir / name).unlink(missing_ok=True)

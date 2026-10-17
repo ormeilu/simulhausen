@@ -5,7 +5,9 @@ A Harbor task is data, so the scenario it runs is too. The file mirrors
 criteria for the judge, an optional script and a ``target`` that says how to reach the
 agent under test. Python callables cannot live in a data file, so script assertions
 become declarative checks (a tool was called, was not called, ran in order, a reply
-contains a text), evaluated on the recorded dialogue in the judge phase.
+contains a text), evaluated on the recorded dialogue in the judge phase. A check's
+``evaluate`` takes the state and, optionally, the indices of the assistant messages the
+script injected (``Transcript.injected``), which reply checks skip.
 
 ``[defaults]`` holds keys shared by every scenario of the file. A scenario key replaces
 the default as a whole: tables such as ``target`` are not merged key by key, so a
@@ -30,7 +32,7 @@ from simulhausen.harbor.errors import ConfigError
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from simulhausen.types import ScenarioState
 
@@ -66,8 +68,13 @@ def _contains(text: str, needle: str, case_sensitive: bool) -> bool:
     return needle in text if case_sensitive else needle.casefold() in text.casefold()
 
 
-def _agent_replies(state: ScenarioState) -> list[str]:
-    return [message["content"] for message in state.messages if message["role"] == "assistant"]
+def _agent_replies(state: ScenarioState, injected: Collection[int]) -> list[str]:
+    """The replies of the agent under test: the assistant messages the script did not inject."""
+    return [
+        message["content"]
+        for index, message in enumerate(state.messages)
+        if message["role"] == "assistant" and index not in injected
+    ]
 
 
 class _Data(BaseModel):
@@ -88,7 +95,7 @@ class ToolCalledCheck(_Data):
     def describe(self) -> str:
         return f"tool {self.tool!r} was called"
 
-    def evaluate(self, state: ScenarioState) -> bool:
+    def evaluate(self, state: ScenarioState, injected: Collection[int] = ()) -> bool:
         return state.has_tool_call(self.tool)
 
 
@@ -101,7 +108,7 @@ class ToolNotCalledCheck(_Data):
     def describe(self) -> str:
         return f"tool {self.tool!r} was not called"
 
-    def evaluate(self, state: ScenarioState) -> bool:
+    def evaluate(self, state: ScenarioState, injected: Collection[int] = ()) -> bool:
         return not state.has_tool_call(self.tool)
 
 
@@ -114,12 +121,13 @@ class ToolsInOrderCheck(_Data):
     def describe(self) -> str:
         return "tools ran in order: " + " -> ".join(self.tools)
 
-    def evaluate(self, state: ScenarioState) -> bool:
+    def evaluate(self, state: ScenarioState, injected: Collection[int] = ()) -> bool:
         return state.has_tool_calls_in_order(self.tools)
 
 
 class ReplyContainsCheck(_Data):
-    """Passes when any agent reply contains ``text`` (case-insensitive unless ``case_sensitive``)."""
+    """Passes when any reply of the agent under test contains ``text`` (case-insensitive
+    unless ``case_sensitive``); replies at the ``injected`` indices do not count."""
 
     type: Literal["reply_contains"]
     text: str = Field(min_length=1)
@@ -128,12 +136,13 @@ class ReplyContainsCheck(_Data):
     def describe(self) -> str:
         return f"an agent reply contains {self.text!r}"
 
-    def evaluate(self, state: ScenarioState) -> bool:
-        return any(_contains(reply, self.text, self.case_sensitive) for reply in _agent_replies(state))
+    def evaluate(self, state: ScenarioState, injected: Collection[int] = ()) -> bool:
+        return any(_contains(reply, self.text, self.case_sensitive) for reply in _agent_replies(state, injected))
 
 
 class ReplyNotContainsCheck(_Data):
-    """Passes when no agent reply contains ``text`` (case-insensitive unless ``case_sensitive``)."""
+    """Passes when no reply of the agent under test contains ``text`` (case-insensitive
+    unless ``case_sensitive``); replies at the ``injected`` indices do not count."""
 
     type: Literal["reply_not_contains"]
     text: str = Field(min_length=1)
@@ -142,8 +151,8 @@ class ReplyNotContainsCheck(_Data):
     def describe(self) -> str:
         return f"no agent reply contains {self.text!r}"
 
-    def evaluate(self, state: ScenarioState) -> bool:
-        return not any(_contains(reply, self.text, self.case_sensitive) for reply in _agent_replies(state))
+    def evaluate(self, state: ScenarioState, injected: Collection[int] = ()) -> bool:
+        return not any(_contains(reply, self.text, self.case_sensitive) for reply in _agent_replies(state, injected))
 
 
 CheckSpec = Annotated[

@@ -361,3 +361,16 @@ def test_reply_checks_look_at_agent_replies_only() -> None:
     assert ReplyNotContainsCheck(type="reply_not_contains", text="REFUNDED", case_sensitive=True).evaluate(state)
     assert ReplyContainsCheck(type="reply_contains", text="x").describe() == "an agent reply contains 'x'"
     assert ReplyNotContainsCheck(type="reply_not_contains", text="x").describe() == "no agent reply contains 'x'"
+
+
+def test_reply_checks_skip_the_replies_the_script_injected() -> None:
+    # Messages 1 and 3 are replies; 1 was injected by the script, not written by the agent under test.
+    state = _state("Earlier: I found order 1042.", "How can I help?")
+    contains = ReplyContainsCheck(type="reply_contains", text="1042")
+    not_contains = ReplyNotContainsCheck(type="reply_not_contains", text="1042")
+
+    assert contains.evaluate(state)
+    assert not contains.evaluate(state, {1})
+    assert not not_contains.evaluate(state)
+    assert not_contains.evaluate(state, {1})
+    assert ToolNotCalledCheck(type="tool_not_called", tool="x").evaluate(state, {1})

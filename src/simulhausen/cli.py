@@ -32,7 +32,7 @@ from simulhausen.harbor.judge import (
     WARN_REWARDS,
     judge_transcript,
     prepare_judge,
-    remove_stale_reward,
+    remove_stale_results,
     unreadable_transcript,
     write_judge_outputs,
 )
@@ -40,7 +40,7 @@ from simulhausen.harbor.paths import AGENT_LOGS_DIR, DEFAULT_TRANSCRIPT, REWARD_
 from simulhausen.harbor.play import play
 from simulhausen.harbor.spec import load_scenarios, select_scenario
 from simulhausen.harbor.targets import resolve_target_config
-from simulhausen.harbor.transcript import TranscriptError, read_transcript, write_play_outputs
+from simulhausen.harbor.transcript import TranscriptError, read_transcript, remove_play_outputs, write_play_outputs
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
@@ -82,10 +82,18 @@ def _report_play(out: Path, transcript: Transcript) -> None:
 
 
 def _cmd_play(args: argparse.Namespace) -> int:
+    # First, so that even a configuration error leaves no old dialogue for a later judge to grade as new.
+    remove_play_outputs(args.out)
     spec = _load(args)
     target = resolve_target_config(spec, target_json=args.target_json, target_file=args.target_file)
     transcript = asyncio.run(
-        play(spec, target, model=args.model, on_progress=lambda partial: write_play_outputs(args.out, partial))
+        play(
+            spec,
+            target,
+            model=args.model,
+            on_progress=lambda partial: write_play_outputs(args.out, partial),
+            keep_dialogue_on_cancel=True,
+        )
     )
     write_play_outputs(args.out, transcript)
     _report_play(args.out, transcript)
@@ -110,9 +118,10 @@ def _finish_judgement(args: argparse.Namespace, judgement: Judgement) -> int:
 
 
 def _cmd_judge(args: argparse.Namespace) -> int:
+    # First, so that even a configuration error (exit 1) leaves no old reward behind.
+    remove_stale_results(args.out)
     spec = _load(args)
     spec.require_gradable()
-    remove_stale_reward(args.out)
     try:
         transcript = read_transcript(args.transcript)
     except TranscriptError as exc:
@@ -123,14 +132,16 @@ def _cmd_judge(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    # First, so that even a configuration error (exit 1) leaves no old reward or dialogue behind.
+    remove_stale_results(args.out)
+    remove_play_outputs(args.out)
     spec = _load(args)
     spec.require_gradable()
     target = resolve_target_config(spec, target_json=args.target_json, target_file=args.target_file)
     judge = prepare_judge(spec, args.model)
-    remove_stale_reward(args.out)
 
     async def play_and_judge() -> Judgement:
-        transcript = await play(spec, target, model=args.model)
+        transcript = await play(spec, target, model=args.model, keep_dialogue_on_cancel=True)
         write_play_outputs(args.out, transcript)
         _report_play(args.out, transcript)
         return await judge_transcript(spec, transcript, judge=judge)

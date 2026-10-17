@@ -5,11 +5,14 @@ import pytest
 from agno.models.base import Model
 from harbor_support import TARGET, ScriptedSimulator, goal_reached
 
+import simulhausen as sim
 from simulhausen import (
     AgentAdapter,
     AgentInput,
+    ScenarioState,
     SimulationStructuredOutputError,
     UserSimulatorAgent,
+    UserTurn,
     collector,
     function_adapter,
 )
@@ -70,10 +73,9 @@ async def test_a_scripted_dialogue_records_messages_checkpoints_and_tools(no_sim
         ("user", "thanks"),
         ("assistant", "injected reply"),
     ]
-    assert [(c.kind, c.step, c.message_count, c.criteria) for c in transcript.checkpoints] == [
-        ("judge", 2, 2, []),
-        ("check", 4, 3, []),
-    ]
+    assert [(c.kind, c.step, c.message_count) for c in transcript.checkpoints] == [("judge", 2, 2), ("check", 4, 3)]
+    # The seeded message and the injected reply came from the script, not from the agent under test.
+    assert transcript.injected == [2, 4]
     assert transcript.stop_reason == "judge_step"
     assert transcript.turns == 2
     assert [turn.message_index for turn in transcript.agent_turns] == [1]
@@ -189,6 +191,9 @@ def hanging_agent() -> AgentAdapter:
     return function_adapter(reply)
 
 
+HANGING_TARGET = {"type": "python", "factory": "test_harbor_play:hanging_agent"}
+
+
 async def test_an_interrupted_dialogue_keeps_what_was_played(no_simulator: None) -> None:
     spec = _spec([{"user": "hello"}, {"agent": True}, {"user": "hang"}, {"agent": True}])
     partial: list[Transcript] = []
@@ -199,8 +204,7 @@ async def test_an_interrupted_dialogue_keeps_what_was_played(no_simulator: None)
         if len(transcript.messages) == 3:
             stalled.set()
 
-    target = {"type": "python", "factory": "test_harbor_play:hanging_agent"}
-    task = asyncio.create_task(play(spec, target, on_progress=progress))
+    task = asyncio.create_task(play(spec, HANGING_TARGET, on_progress=progress, keep_dialogue_on_cancel=True))
     await asyncio.wait_for(stalled.wait(), timeout=5)
     # Until play returns, every step leaves a transcript marked as unfinished (a kill keeps that one).
     assert partial[-1].harness_error
@@ -212,6 +216,42 @@ async def test_an_interrupted_dialogue_keeps_what_was_played(no_simulator: None)
     assert transcript.stop_reason == "harness_error"
     assert transcript.error == "interrupted (SIGINT or timeout) before the dialogue finished"
     assert [m.content for m in transcript.messages] == ["hello", "ok", "hang"]
+    assert transcript.agent_time == 0.0  # run() reports nothing when it is cancelled
+
+
+async def test_a_cancellation_propagates_by_default(no_simulator: None) -> None:
+    """Only the CLI asks play to swallow a cancellation; a caller's own timeout must still fire."""
+    spec = _spec([{"user": "hang"}, {"agent": True}])
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await play(spec, HANGING_TARGET)
+
+    assert collector.records == []
+
+
+class SlowSimulator(UserSimulatorAgent):
+    """Takes a while to write its message, so other scenarios finish while play runs."""
+
+    async def next_turn(self, state: ScenarioState) -> UserTurn:
+        await asyncio.sleep(0.3)
+        return UserTurn(message="slowly written", goal_achieved=False)
+
+
+async def test_play_leaves_the_records_of_other_scenarios_alone(no_simulator: None) -> None:
+    async def slow_reply(agent_input: AgentInput) -> str:
+        await asyncio.sleep(0.1)
+        return "done"
+
+    other = sim.run("other scenario", "d", [function_adapter(slow_reply)], [sim.user("x"), sim.agent(), sim.succeed()])
+    spec = _spec([{"user": "hi"}, {"agent": True}, {"user": True}, {"agent": True}])
+
+    transcript, other_result = await asyncio.gather(play(spec, TARGET, simulator=SlowSimulator()), other)
+
+    # The other scenario finished while play ran: its record stays, and its agent time is not play's.
+    assert [record.result for record in collector.records] == [other_result]
+    assert other_result.agent_time >= 0.1
+    assert transcript.agent_time < 0.1
 
 
 async def test_configuration_errors_raise_before_anything_is_played() -> None:

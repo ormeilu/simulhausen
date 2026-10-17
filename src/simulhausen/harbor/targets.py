@@ -26,7 +26,7 @@ from simulhausen.harbor.errors import ConfigError
 from simulhausen.types import AgentAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from simulhausen.harbor.spec import ScenarioSpec
@@ -98,16 +98,33 @@ def _resolve_env(options: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def _is_runnable(candidate: object) -> bool:
+    """An adapter, or an agno Agent, Team or Workflow (anything with the same ``arun``).
+
+    A class with ``arun``, such as an Agent subclass, is a factory instead: calling it builds the agent.
+    """
+    return not isinstance(candidate, type) and (isinstance(candidate, AgentAdapter) or hasattr(candidate, "arun"))
+
+
 def _as_adapter(produced: object, factory: str) -> AgentAdapter:
     if isinstance(produced, AgentAdapter):
         return produced
-    if hasattr(produced, "arun"):
+    if _is_runnable(produced):
         # An agno Agent, Team or Workflow (or anything with the same arun).
         return agno_adapter(produced)  # ty: ignore[invalid-argument-type]
+    what = f"the class {produced.__name__}" if isinstance(produced, type) else type(produced).__name__
     raise ConfigError(
-        f"target factory {factory!r} returned {type(produced).__name__}; it must return an AgentAdapter "
+        f"target factory {factory!r} returned {what}; it must return an AgentAdapter "
         "(simulhausen.function_adapter(...), a subclass) or an agno Agent, Team or Workflow"
     )
+
+
+def _call_factory(factory: Callable[..., object], options: dict[str, Any], label: str) -> object:
+    try:
+        return factory(**options)
+    except (TypeError, ValueError) as exc:
+        # TypeError: an unknown or missing option; ValueError: a factory that checks its options.
+        raise ConfigError(f"{label} rejected the options {sorted(options)}: {exc}") from exc
 
 
 def _build_python_target(options: dict[str, Any]) -> AgentAdapter:
@@ -115,7 +132,7 @@ def _build_python_target(options: dict[str, Any]) -> AgentAdapter:
     if not isinstance(reference, str):
         raise ConfigError("a target of type 'python' needs `factory = \"package.module:attribute\"`")
     factory = import_object(reference, what="target factory")
-    if isinstance(factory, AgentAdapter) or hasattr(factory, "arun"):
+    if _is_runnable(factory):
         if options:
             raise ConfigError(
                 f"target factory {reference!r} is not callable, so it takes no options: {sorted(options)}"
@@ -123,11 +140,7 @@ def _build_python_target(options: dict[str, Any]) -> AgentAdapter:
         return _as_adapter(factory, reference)
     if not callable(factory):
         raise ConfigError(f"target factory {reference!r} is a {type(factory).__name__}, not a callable")
-    try:
-        produced = factory(**options)
-    except TypeError as exc:
-        raise ConfigError(f"target factory {reference!r} rejected the options {sorted(options)}: {exc}") from exc
-    return _as_adapter(produced, reference)
+    return _as_adapter(_call_factory(factory, options, f"target factory {reference!r}"), reference)
 
 
 def build_target(config: Mapping[str, Any]) -> AgentAdapter:
@@ -151,11 +164,7 @@ def build_target(config: Mapping[str, Any]) -> AgentAdapter:
     factory = import_object(FACTORIES[kind], what=f"target type {kind!r}")
     if not callable(factory):
         raise ConfigError(f"target type {kind!r}: {FACTORIES[kind]} is not callable")
-    try:
-        produced = factory(**options)
-    except TypeError as exc:
-        raise ConfigError(f"target type {kind!r} rejected the options {sorted(options)}: {exc}") from exc
-    return _as_adapter(produced, FACTORIES[kind])
+    return _as_adapter(_call_factory(factory, options, f"target type {kind!r}"), FACTORIES[kind])
 
 
 def redact_target(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -186,9 +195,11 @@ def resolve_target_config(
         return _parse_target_json(target_json, "--target-json")
     if target_file is not None:
         try:
-            text = target_file.read_text()
+            text = target_file.read_text(encoding="utf-8")
         except OSError as exc:
             raise ConfigError(f"cannot read --target-file {target_file}: {exc.strerror or exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise ConfigError(f"--target-file {target_file} is not UTF-8: {exc}") from exc
         return _parse_target_json(text, f"--target-file {target_file}")
     if from_env := os.environ.get(TARGET_ENV):
         return _parse_target_json(from_env, f"${TARGET_ENV}")

@@ -6,8 +6,8 @@ recorded dialogue later. The scenario's script is translated into simulhausen sc
 steps, and a few callables between them watch the run: one keeps the live
 :class:`~simulhausen.ScenarioState` (the runner mutates that one object throughout, so
 it survives an exception), checkpoint steps note how many messages the dialogue had when
-they were reached, and the proceed steps note why they stopped, which becomes the
-transcript's ``stop_reason``.
+they were reached, injected replies note their index, and the proceed steps note why
+they stopped, which becomes the transcript's ``stop_reason``.
 
 Without a judge nothing ends a ``proceed`` early except the simulator reporting the goal
 reached, so a dialogue ends there, at ``max_turns``, at a ``judge = true`` step or at the
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from simulhausen.harbor.spec import ScenarioSpec, ScriptStepSpec
     from simulhausen.harbor.transcript import StopReason, Transcript
+    from simulhausen.reporting import ScenarioRecord
     from simulhausen.script import ScriptStep
     from simulhausen.types import ScenarioState
 
@@ -65,6 +66,7 @@ class _Recorder:
         self.on_progress = on_progress
         self.state: ScenarioState | None = None
         self.checkpoints: list[Checkpoint] = []
+        self.injected: list[int] = []
         self.stop_reason: StopReason = "script_end"
 
     def script(self) -> list[ScriptStep]:
@@ -85,13 +87,21 @@ class _Recorder:
         # A later message step means the dialogue did not end where a proceed stopped.
         self.stop_reason = "script_end"
 
+    def _reply_injected(self, state: ScenarioState) -> None:
+        # The script wrote this assistant message, not the agent under test.
+        self.injected.append(len(state.messages) - 1)
+        self._message_added(state)
+
     def _translate(self, index: int, step: ScriptStepSpec) -> list[ScriptStep]:
         if step.user is not None:
             return [user(None if step.user is True else step.user), self._message_added]
+        if step.agent is True:
+            return [agent(), self._message_added]
         if step.agent is not None:
-            return [agent(None if step.agent is True else step.agent), self._message_added]
+            return [agent(step.agent), self._reply_injected]
         if step.message is not None:
-            return [message(step.message.role, step.message.content), self._message_added]
+            added = self._reply_injected if step.message.role == "assistant" else self._message_added
+            return [message(step.message.role, step.message.content), added]
         if step.proceed is not None:
             return self._proceed(None if step.proceed is True else step.proceed.turns)
         if step.is_final_judge:
@@ -131,6 +141,21 @@ def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _take_own_record(before: dict[int, ScenarioRecord], name: str) -> ScenarioRecord | None:
+    """Remove the record play's own ``run()`` added to the collector, and return it.
+
+    ``run()`` reports every scenario, and this one has no verdict yet: the judge phase
+    reports the graded result. Other scenarios may finish while play runs (``asyncio.gather``),
+    so it is the last record with this scenario's name among those added since play started
+    (``before`` holds the earlier ones by ``id()``, and keeps them alive so no new record
+    can take over an id).
+    """
+    own = next((r for r in reversed(collector.records) if id(r) not in before and r.result.name == name), None)
+    if own is not None:
+        collector.records = [record for record in collector.records if record is not own]
+    return own
+
+
 async def play(
     spec: ScenarioSpec,
     target: Mapping[str, Any],
@@ -138,6 +163,7 @@ async def play(
     model: str | None = None,
     simulator: UserSimulatorAgent | None = None,
     on_progress: Callable[[Transcript], None] | None = None,
+    keep_dialogue_on_cancel: bool = False,
 ) -> Transcript:
     """Play ``spec`` against the agent ``target`` describes and return the transcript.
 
@@ -145,9 +171,14 @@ async def play(
     ``proceed`` step), on ``model`` or the model the environment or the scenario names;
     pass ``simulator`` to supply your own. Configuration problems (the target, the
     model) raise :class:`~simulhausen.harbor.ConfigError` before anything is played.
-    Once the dialogue runs, nothing raises: a harness failure or an error of the agent
-    under test ends up in the transcript (``harness_error``, ``error``), next to the
+    Once the dialogue runs, a harness failure or an error of the agent under test does
+    not raise: it ends up in the transcript (``harness_error``, ``error``), next to the
     messages played until then.
+
+    A cancellation (a caller's ``asyncio.timeout``, ``task.cancel()``) propagates as usual.
+    With ``keep_dialogue_on_cancel`` it ends the dialogue instead, recorded as a harness
+    failure, and play returns what was played: the CLI sets it, since ``asyncio.run`` turns
+    SIGINT (``timeout -s INT`` around ``play``) into a cancellation.
     """
     adapter = build_target(target)
     if simulator is None and spec.uses_simulator():
@@ -166,6 +197,7 @@ async def play(
                     simulhausen_version=__version__,
                     checkpoints=recorder.checkpoints,
                     stop_reason="harness_error",
+                    injected=recorder.injected,
                     harness_error=True,
                     error=f"play did not finish: stopped (killed or timed out) after {len(state.messages)} message(s)",
                     total_time=time.perf_counter() - started,
@@ -175,7 +207,7 @@ async def play(
 
     recorder = _Recorder(spec, spec.max_turns or get_config().max_turns, progress)
     agents: list[object] = [adapter] if simulator is None else [adapter, simulator]
-    first_record = len(collector.records)
+    before = {id(record): record for record in collector.records}
     harness_error = False
     error: str | None = None
     try:
@@ -191,6 +223,8 @@ async def play(
         harness_error, error = True, _describe(exc)
         recorder.stop_reason = "harness_error"
     except asyncio.CancelledError:
+        if not keep_dialogue_on_cancel:
+            raise
         # SIGINT (asyncio.run turns it into a cancellation; play_timeout_sec sends it through timeout(1)):
         # keep the dialogue played so far, the judge reports it as WARN.
         if (task := asyncio.current_task()) is not None:
@@ -201,19 +235,17 @@ async def play(
         error = _describe(exc)
         recorder.stop_reason = "error"
     total_time = time.perf_counter() - started
-    # run() reports every scenario to the collector. This one has no verdict yet: drop it,
-    # the judge phase reports the graded result.
-    agent_time = sum(record.result.agent_time for record in collector.records[first_record:])
-    del collector.records[first_record:]
+    own = _take_own_record(before, spec.name)
     return build_transcript(
         recorder.state,
         scenario=scenario,
         simulhausen_version=__version__,
         checkpoints=recorder.checkpoints,
         stop_reason=recorder.stop_reason,
+        injected=recorder.injected,
         harness_error=harness_error,
         error=error,
         total_time=total_time,
-        agent_time=agent_time,
+        agent_time=own.result.agent_time if own is not None else 0.0,
         target=redact_target(target),
     )

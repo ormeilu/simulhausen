@@ -1,7 +1,8 @@
 """Verifier: grade a recorded dialogue and turn the outcome into Harbor's ``reward.json``.
 
-The judge phase rebuilds the :class:`~simulhausen.ScenarioState` from ``transcript.json``
-and grades it with the same pieces a live :func:`simulhausen.run` uses:
+The judge phase rebuilds the :class:`~simulhausen.ScenarioState` from ``transcript.json``,
+with the scenario's name and description from the verifier's own scenario file, and
+grades it with the same pieces a live :func:`simulhausen.run` uses:
 :meth:`JudgeAgent.judge` for the scenario's criteria on the whole dialogue and for every
 checkpoint's criteria on the dialogue up to that checkpoint, :meth:`JudgeAgent.score` when
 ``score_threshold`` is set, and the declarative checks. The outcome is an ordinary
@@ -16,6 +17,7 @@ times, goes to ``simulhausen-result.json`` next to it.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -26,7 +28,7 @@ from simulhausen.exceptions import SimulationHarnessError
 from simulhausen.harbor.models import resolve_model
 from simulhausen.harbor.paths import RESULT_FILE, REWARD_FILE, TRANSCRIPT_MARKDOWN_FILE
 from simulhausen.harbor.spec import JudgeCheckpointSpec
-from simulhausen.harbor.transcript import transcript_markdown, write_json
+from simulhausen.harbor.transcript import transcript_markdown, write_json, write_text
 from simulhausen.reporting import ScenarioRecord, collector, serialize_records
 from simulhausen.types import ScenarioResult, ScenarioStatus
 
@@ -50,10 +52,12 @@ __all__ = [
     "judge_transcript",
     "needs_judge",
     "prepare_judge",
-    "remove_stale_reward",
+    "remove_stale_results",
     "unreadable_transcript",
     "write_judge_outputs",
 ]
+
+logger = logging.getLogger(__name__)
 
 RESULT_FORMAT: Final = "simulhausen-result/1"
 
@@ -202,11 +206,7 @@ def _mismatch(spec: ScenarioSpec, transcript: Transcript) -> str | None:
     if not transcript.finished:
         # An interrupted dialogue never reached its later checkpoints; it is not graded anyway.
         return None
-    expected = [
-        (index, "judge" if isinstance(step.judge, JudgeCheckpointSpec) else "check")
-        for index, step in enumerate(spec.steps)
-        if step.is_checkpoint
-    ]
+    expected = [(index, spec.steps[index].kind) for index in spec.checkpoint_steps()]
     recorded = [(checkpoint.step, checkpoint.kind) for checkpoint in transcript.checkpoints]
     if recorded != expected:
         return (
@@ -216,20 +216,27 @@ def _mismatch(spec: ScenarioSpec, transcript: Transcript) -> str | None:
     return None
 
 
-def _checks(spec: ScenarioSpec, transcript: Transcript, state: ScenarioState) -> list[CheckOutcome]:
+def _judged_state(spec: ScenarioSpec, transcript: Transcript, limit: int | None = None) -> ScenarioState:
+    """The first ``limit`` messages (all by default) as the judge grades them.
+
+    The scenario's name and description come from the verifier's scenario file, not from
+    the transcript: nothing the agent phase wrote may shape the judge's instructions.
+    """
+    return transcript.to_state(limit, name=spec.name, description=spec.description)
+
+
+def _checks(
+    spec: ScenarioSpec, transcript: Transcript, state: ScenarioState, prefixes: dict[int, ScenarioState]
+) -> list[CheckOutcome]:
+    injected = frozenset(transcript.injected)
     outcomes = [
-        CheckOutcome(number, check.type, check.describe(), check.evaluate(state))
+        CheckOutcome(number, check.type, check.describe(), check.evaluate(state, injected))
         for number, check in enumerate(spec.checks, 1)
     ]
-    reached = {checkpoint.step: checkpoint.message_count for checkpoint in transcript.checkpoints}
     for index, step in enumerate(spec.steps):
-        if step.check is not None:
-            prefix = transcript.to_state(reached[index])
-            outcomes.append(
-                CheckOutcome(
-                    len(outcomes) + 1, step.check.type, step.check.describe(), step.check.evaluate(prefix), index
-                )
-            )
+        if (check := step.check) is not None:
+            passed = check.evaluate(prefixes[index], injected)
+            outcomes.append(CheckOutcome(len(outcomes) + 1, check.type, check.describe(), passed, index))
     return outcomes
 
 
@@ -246,16 +253,16 @@ class _Grading:
         self.criteria += [GradedCriterion(start + offset, verdict, step) for offset, verdict in enumerate(verdicts)]
         self.summaries.append(summary)
 
-    async def run(self, judge: JudgeAgent, spec: ScenarioSpec, transcript: Transcript, state: ScenarioState) -> None:
+    async def run(
+        self, judge: JudgeAgent, spec: ScenarioSpec, state: ScenarioState, prefixes: dict[int, ScenarioState]
+    ) -> None:
         if spec.criteria:
             final = await judge.judge(state, None, additional_context=spec.additional_context)
             self.add(final.verdicts, final.summary)
-        reached = {checkpoint.step: checkpoint.message_count for checkpoint in transcript.checkpoints}
         for index, step in enumerate(spec.steps):
-            if isinstance(step.judge, JudgeCheckpointSpec):
-                prefix = transcript.to_state(reached[index])
+            if isinstance(checkpoint := step.judge, JudgeCheckpointSpec):
                 verdict = await judge.judge(
-                    prefix, step.judge.criteria, additional_context=step.judge.additional_context
+                    prefixes[index], checkpoint.criteria, additional_context=checkpoint.additional_context
                 )
                 self.add(verdict.verdicts, verdict.summary, index)
         if spec.score_threshold is not None:
@@ -279,6 +286,7 @@ def prepare_judge(spec: ScenarioSpec, model: str | None) -> JudgeAgent | None:
 def _conclude(
     spec: ScenarioSpec,
     transcript: Transcript | None,
+    state: ScenarioState | None,
     started: float,
     *,
     grading: _Grading | None = None,
@@ -309,7 +317,7 @@ def _conclude(
         verdicts=verdicts,
         judge_score=grading.score,
         messages=[{"role": m.role, "content": m.content} for m in transcript.messages] if transcript else [],
-        tool_calls=transcript.to_state().tool_call_names() if transcript else [],
+        tool_calls=state.tool_call_names() if state else [],
         turns=transcript.turns if transcript else 0,
         reasoning=grading.summaries[0] if grading.summaries else None,
         failure_reason=failure_reason,
@@ -333,39 +341,51 @@ async def judge_transcript(
     The judge is built (on ``model`` or the model the environment or the scenario names)
     only when there are criteria to grade; pass ``judge`` to supply your own. A dialogue
     the harness broke is WARN without asking the judge, one the agent under test broke
-    (a runtime error) is FAIL, and a judge that fails to answer
-    (:class:`~simulhausen.SimulationHarnessError`) makes the scenario WARN unless a
-    failure was already certain. The result is also added to :data:`simulhausen.collector`.
+    (a runtime error) is FAIL, and a judge that fails to answer (a
+    :class:`~simulhausen.SimulationHarnessError` or any other exception) makes the
+    scenario WARN unless a failure was already certain. The result is also added to
+    :data:`simulhausen.collector`.
     """
     spec.require_gradable()
     started = time.perf_counter()
+    state = _judged_state(spec, transcript)
     if problem := _mismatch(spec, transcript):
-        return _conclude(spec, transcript, started, harness=problem)
+        return _conclude(spec, transcript, state, started, harness=problem)
     if transcript.harness_error:
-        return _conclude(spec, transcript, started, harness=f"the dialogue did not finish: {transcript.error}")
+        return _conclude(spec, transcript, state, started, harness=f"the dialogue did not finish: {transcript.error}")
     if transcript.stop_reason == "error":
-        return _conclude(spec, transcript, started, failure=f"runtime error: {transcript.error}")
-    state = transcript.to_state()
-    checks = _checks(spec, transcript, state)
+        return _conclude(spec, transcript, state, started, failure=f"runtime error: {transcript.error}")
+    # The dialogue as it stood at each checkpoint, by script index.
+    prefixes = {c.step: _judged_state(spec, transcript, c.message_count) for c in transcript.checkpoints}
+    checks = _checks(spec, transcript, state, prefixes)
     grading = _Grading()
     harness: str | None = None
     judge = judge or prepare_judge(spec, model)
     if judge is not None:
         try:
-            await grading.run(judge, spec, transcript, state)
+            await grading.run(judge, spec, state, prefixes)
         except SimulationHarnessError as exc:
             harness = f"harness failure: {exc!r}"
-    return _conclude(spec, transcript, started, grading=grading, checks=checks, harness=harness)
+        except Exception as exc:
+            # Whatever breaks the judge leaves the scenario unverified: still a result, never a crash.
+            logger.exception("[%s] the judge failed", spec.id)
+            harness = f"harness failure: {exc!r}"
+    return _conclude(spec, transcript, state, started, grading=grading, checks=checks, harness=harness)
 
 
 def unreadable_transcript(spec: ScenarioSpec, reason: str) -> Judgement:
     """The WARN judgement for a transcript that is missing or cannot be read."""
-    return _conclude(spec, None, time.perf_counter(), harness=reason)
+    return _conclude(spec, None, None, time.perf_counter(), harness=reason)
 
 
-def remove_stale_reward(out_dir: Path) -> None:
-    """Delete a ``reward.json`` left from an earlier run, so a WARN never shows an old reward."""
-    (out_dir / REWARD_FILE).unlink(missing_ok=True)
+def remove_stale_results(out_dir: Path) -> None:
+    """Delete the ``reward.json`` and ``simulhausen-result.json`` of an earlier run.
+
+    The CLI calls it before anything else, so neither a WARN nor a configuration error
+    leaves an old reward behind.
+    """
+    for name in (REWARD_FILE, RESULT_FILE):
+        (out_dir / name).unlink(missing_ok=True)
 
 
 def write_judge_outputs(
@@ -375,12 +395,11 @@ def write_judge_outputs(
 
     Returns the reward written, ``None`` when a WARN wrote none.
     """
-    remove_stale_reward(out_dir)
+    remove_stale_results(out_dir)
     reward = judgement.reward(mode, warn)
     write_json(out_dir / RESULT_FILE, judgement.to_json_dict(reward))
     if judgement.transcript is not None:
-        markdown = transcript_markdown(judgement.transcript, judgement.markdown())
-        (out_dir / TRANSCRIPT_MARKDOWN_FILE).write_text(markdown)
+        write_text(out_dir / TRANSCRIPT_MARKDOWN_FILE, transcript_markdown(judgement.transcript, judgement.markdown()))
     if reward is not None:
         # Last: Harbor reads this file as the verdict.
         write_json(out_dir / REWARD_FILE, reward)

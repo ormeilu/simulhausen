@@ -1,14 +1,27 @@
+import asyncio
 import json
 import logging
+import os
 import runpy
+import signal
+import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
 from harbor_support import TARGET, ScriptedJudge, ScriptedSimulator, write_scenarios
 
-from simulhausen import JudgeAgent, SimulationBackendError, UserSimulatorAgent, __version__
+from simulhausen import (
+    AgentAdapter,
+    AgentInput,
+    JudgeAgent,
+    SimulationBackendError,
+    UserSimulatorAgent,
+    __version__,
+    function_adapter,
+)
 from simulhausen.cli import EXIT_OK, EXIT_UNVERIFIED, EXIT_USAGE, main
 from simulhausen.harbor import ScenarioSpec
 from simulhausen.harbor import judge as judge_module
@@ -127,6 +140,52 @@ def test_configuration_errors_exit_1(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert not (tmp_path / "out").exists()
 
 
+def test_play_removes_an_old_dialogue_before_anything_can_fail(
+    scenario_file: Path, tmp_path: Path, helpers: dict[str, Any]
+) -> None:
+    out = tmp_path / "agent"
+    _play(scenario_file, out)
+    (out / "notes.txt").write_text("mine")
+    broken = write_scenarios(tmp_path / "broken.json", {**SCENARIO, "critera": ["typo"]})
+
+    code = main(["harbor", "play", "--scenario", str(broken), "--out", str(out)])
+
+    # A later judge finds no transcript (WARN) instead of grading the old dialogue as new.
+    assert code == EXIT_USAGE
+    assert [path.name for path in out.iterdir()] == ["notes.txt"]
+
+
+def interrupted_agent() -> AgentAdapter:
+    """A python target that stalls on "hang" after SIGINT arrives, as `timeout -s INT` stops a play that runs long."""
+
+    async def reply(agent_input: AgentInput) -> str:
+        if "hang" in agent_input.last_new_user_message_str():
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.Event().wait()
+        return "ok"
+
+    return function_adapter(reply)
+
+
+@pytest.mark.parametrize("command", ["play", "run"])
+def test_sigint_keeps_the_dialogue_played_so_far(
+    tmp_path: Path, helpers: dict[str, Any], capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    script = [{"user": "hello"}, {"agent": True}, {"user": "hang"}, {"agent": True}]
+    path = write_scenarios(tmp_path / "s.json", {**SCENARIO, "script": script})
+    target = json.dumps({"type": "python", "factory": "test_harbor_cli:interrupted_agent"})
+
+    code = main(["harbor", command, "--scenario", str(path), "--out", str(tmp_path), "--target-json", target])
+
+    assert code == EXIT_UNVERIFIED
+    transcript = _json(tmp_path / "transcript.json")
+    assert [m["content"] for m in transcript["messages"]] == ["hello", "ok", "hang"]
+    assert transcript["error"] == "interrupted (SIGINT or timeout) before the dialogue finished"
+    assert "the dialogue did not finish (harness failure): interrupted" in capsys.readouterr().err
+    if command == "run":
+        assert _json(tmp_path / "simulhausen-result.json")["status"] == "warn"
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -243,6 +302,45 @@ def test_judge_refuses_a_scenario_with_nothing_to_grade(tmp_path: Path, capsys: 
     assert "nothing to grade" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", ["judge", "run"])
+def test_a_configuration_error_leaves_no_old_reward_behind(
+    scenario_file: Path, tmp_path: Path, helpers: dict[str, Any], command: str
+) -> None:
+    out = tmp_path / "verifier"
+    assert main(["harbor", "run", "--scenario", str(scenario_file), "--out", str(out)]) == EXIT_OK
+    assert (out / "reward.json").exists()
+    broken = write_scenarios(tmp_path / "broken.json", {**SCENARIO, "critera": ["typo"]})
+
+    code = main(["harbor", command, "--scenario", str(broken), "--out", str(out)])
+
+    assert code == EXIT_USAGE
+    left = sorted(path.name for path in out.iterdir())
+    # run also plays, so it clears the old dialogue too; judge leaves what play wrote there.
+    assert left == ([] if command == "run" else ["trajectory.json", "transcript.json", "transcript.md"])
+
+
+def test_judge_writes_its_files_when_the_judge_breaks(
+    scenario_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, helpers: dict[str, Any]
+) -> None:
+    transcript = _play(scenario_file, tmp_path / "agent")
+    monkeypatch.setattr(
+        judge_module,
+        "build_judge",
+        lambda spec, model: ScriptedJudge(spec.criteria, errors={0: RuntimeError("connection reset")}),
+    )
+    out = tmp_path / "verifier"
+    argv = ["harbor", "judge", "--scenario", str(scenario_file), "--transcript", str(transcript), "--out", str(out)]
+
+    skipped = main(argv)
+    zero = main([*argv, "--warn-reward", "zero"])
+
+    assert (skipped, zero) == (EXIT_UNVERIFIED, EXIT_OK)
+    result = _json(out / "simulhausen-result.json")
+    assert result["status"] == "warn"
+    assert "harness failure: RuntimeError('connection reset')" in result["reason"]
+    assert _json(out / "reward.json") == {"reward": 0}
+
+
 # -- run -----------------------------------------------------------------------
 
 
@@ -266,11 +364,8 @@ def test_run_plays_and_judges_in_one_go(scenario_file: Path, tmp_path: Path, hel
 
 
 def test_run_fails_fast_on_a_judge_model_problem(
-    scenario_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    scenario_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    for name in ("SIMULHAUSEN_JUDGE_MODEL", "SIMULHAUSEN_MODEL"):
-        monkeypatch.delenv(name, raising=False)
-
     code = main(["harbor", "run", "--scenario", str(scenario_file), "--out", str(tmp_path / "out")])
 
     assert code == EXIT_USAGE
@@ -345,6 +440,54 @@ def test_export_hint_names_the_harbor_agent_for_the_target(
 
     assert code == EXIT_OK
     assert f"-a simulhausen_harbor:{hint}" in capsys.readouterr().out
+
+
+def test_files_are_utf8_with_lf_whatever_the_locale(tmp_path: Path) -> None:
+    """Under an ASCII locale, without UTF-8 mode or locale coercion, Python's default encoding cannot hold
+    what the commands write; every file must still come out as UTF-8 with LF line ends."""
+    scenario = {
+        "id": "unicode",
+        "name": "ünïcode ✅",
+        "description": "Größe 🙂\nzweite Zeile",
+        "target": TARGET,
+        "checks": [{"type": "reply_contains", "text": "größe"}],
+        "script": [{"user": "Größe?"}, {"agent": True}],
+    }
+    path = write_scenarios(tmp_path / "s.json", scenario)
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(Path(__file__).parent),
+        "LC_ALL": "C",
+        "PYTHONUTF8": "0",
+        "PYTHONCOERCECLOCALE": "0",
+        # Only stdout and stderr: the files get the locale's default unless the code says otherwise.
+        "PYTHONIOENCODING": "utf-8",
+    }
+
+    for argv in (
+        ["run", "--scenario", str(path), "--out", str(tmp_path / "run")],
+        ["export", str(path), "--output-dir", str(tmp_path / "tasks")],
+    ):
+        done = subprocess.run(
+            [sys.executable, "-m", "simulhausen", "harbor", *argv],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert done.returncode == EXIT_OK, done.stderr
+
+    written = [*(tmp_path / "run").iterdir(), *(p for p in (tmp_path / "tasks").rglob("*") if p.is_file())]
+    assert len(written) == 11
+    for file in written:
+        data = file.read_bytes()
+        data.decode("utf-8")
+        assert b"\r" not in data, file
+    assert "- ✅ 1. an agent reply contains 'größe'" in (tmp_path / "run" / "transcript.md").read_text(encoding="utf-8")
+    task = tomllib.loads((tmp_path / "tasks" / "unicode" / "task.toml").read_text(encoding="utf-8"))
+    assert task["task"]["description"] == "ünïcode ✅"
+    instruction = (tmp_path / "tasks" / "unicode" / "instruction.md").read_bytes()
+    assert instruction == "Größe 🙂\nzweite Zeile\n".encode()
 
 
 def test_export_errors_exit_1(scenario_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

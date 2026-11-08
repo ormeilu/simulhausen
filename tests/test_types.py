@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from agno.models.message import MessageReferences
@@ -494,3 +494,56 @@ def test_turns_after_a_rollback_count_remaining_agent_messages() -> None:
     state.add_agent_message("a2 again", tools=[_executed("lookup", {}, "x")])
 
     assert state.tool_calls().first.turn == 1
+
+
+# -- replay from a report -------------------------------------------------------
+
+
+REPORTED: dict[str, Any] = {
+    "name": "refund",
+    "description": "A user asks for a refund",
+    "tool_calls": ["lookup"],
+    "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "checking"},
+        {"role": "user", "content": "and?"},
+        {"role": "assistant", "content": "done"},
+    ],
+    "judge_calls": [
+        {
+            "criteria": ["looks it up"],
+            "additional_context": "db: row 1",
+            "messages_count": 2,
+            "references": [{"query": "q", "references": [{"content": "policy"}]}],
+            "tool_executions": [{"tool_name": "lookup", "tool_args": {"id": 1}, "result": "found"}],
+        }
+    ],
+}
+
+
+def test_from_report_rebuilds_the_state_a_judge_call_saw() -> None:
+    by_index = ScenarioState.from_report(REPORTED, 0)
+    by_entry = ScenarioState.from_report(REPORTED, REPORTED["judge_calls"][0])
+
+    for state in (by_index, by_entry):
+        assert (state.name, state.description) == ("refund", "A user asks for a refund")
+        assert state.messages == REPORTED["messages"][:2]
+        assert state.current_turn == 1
+        assert state.references_text() == "policy"
+        assert state.tool_call_names() == ["lookup"]
+        assert state.tool_calls("lookup").last.input == {"id": 1}
+
+
+def test_from_report_without_a_judge_call_holds_the_whole_dialogue_and_no_evidence() -> None:
+    state = ScenarioState.from_report(REPORTED)
+
+    assert state.messages == REPORTED["messages"]
+    assert state.current_turn == 2
+    assert (state.references, state.tool_executions) == ([], [])
+
+
+def test_from_report_accepts_a_minimal_scenario() -> None:
+    state = ScenarioState.from_report({"messages": [{"role": "tool", "content": 1}]}, {})
+
+    assert (state.name, state.description) == ("", "")
+    assert state.messages == [{"role": "user", "content": "1"}]

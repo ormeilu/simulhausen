@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
@@ -22,6 +22,7 @@ __all__ = [
     "AgentTurn",
     "CriterionStatus",
     "CriterionVerdict",
+    "JudgeCall",
     "JudgeScore",
     "Message",
     "Role",
@@ -218,6 +219,45 @@ class ScenarioState:
     _origins: dict[int, int] = field(default_factory=dict, repr=False, compare=False)
     # Transcript length when the agent last spoke; AgentInput.new_messages starts here.
     _agent_seen: int = field(default=0, repr=False, compare=False)
+
+    @classmethod
+    def from_report(
+        cls, scenario: Mapping[str, Any], judge_call: int | Mapping[str, Any] | None = None
+    ) -> ScenarioState:
+        """Rebuild the state a judge call saw, from one scenario of a ``--sim-report`` JSON file.
+
+        ``judge_call`` is an entry of the scenario's ``judge_calls`` (written with
+        ``--sim-report-evidence``) or its index there: the state then holds the
+        dialogue as it stood at that call, plus its references and tool
+        executions, so ``JudgeAgent.judge(state, call["criteria"],
+        additional_context=call["additional_context"])`` sends the judge the same
+        evidence again. Without ``judge_call`` the state holds the whole
+        dialogue and no evidence, since a report without evidence keeps only
+        tool names.
+        """
+        from agno.models.message import MessageReferences
+        from agno.models.response import ToolExecution
+
+        messages: list[Message] = [
+            {"role": "assistant" if m["role"] == "assistant" else "user", "content": str(m["content"])}
+            for m in scenario.get("messages") or []
+        ]
+        call: Mapping[str, Any] = {}
+        if isinstance(judge_call, int):
+            call = (scenario.get("judge_calls") or [])[judge_call]
+        elif judge_call is not None:
+            call = judge_call
+        if call:
+            messages = messages[: int(call.get("messages_count", len(messages)))]
+        return cls(
+            thread_id=f"replay-{scenario.get('name', '')}",
+            name=str(scenario.get("name") or ""),
+            description=str(scenario.get("description") or ""),
+            messages=messages,
+            references=[MessageReferences.model_validate(r) for r in call.get("references") or []],
+            tool_executions=[ToolExecution.from_dict(t) for t in call.get("tool_executions") or []],
+            current_turn=sum(1 for m in messages if m["role"] == "assistant"),
+        )
 
     # -- mutation ---------------------------------------------------------
 
@@ -440,6 +480,57 @@ class JudgeScore(BaseModel):
     reasoning: str | None = None
 
 
+@dataclass
+class JudgeCall:
+    """One verdict call of the judge and the evidence it ruled on.
+
+    Kept on :class:`ScenarioResult` so a verdict can be debugged or replayed
+    later (``--sim-report-evidence`` writes it to the JSON report, and
+    :meth:`ScenarioState.from_report` rebuilds the state from it). The judge saw
+    ``messages[:messages_count]`` of the scenario's dialogue.
+    """
+
+    criteria: list[str]
+    verdicts: list[CriterionVerdict] = field(default_factory=list)
+    summary: str = ""
+    additional_context: str | None = None
+    messages_count: int = 0
+    references: list[MessageReferences] = field(default_factory=list)
+    tool_executions: list[ToolExecution] = field(default_factory=list)
+    # Wall-clock seconds of the call (a cache hit takes next to none).
+    time: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain JSON-ready data: the shape ``--sim-report-evidence`` writes."""
+        return {
+            "criteria": list(self.criteria),
+            "verdicts": [verdict.model_dump(mode="json") for verdict in self.verdicts],
+            "summary": self.summary,
+            "additional_context": self.additional_context,
+            "messages_count": self.messages_count,
+            "references": [ref.model_dump(mode="json") for ref in self.references],
+            "tool_executions": [tool.to_dict() for tool in self.tool_executions],
+            "time": self.time,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> JudgeCall:
+        from agno.models.message import MessageReferences
+        from agno.models.response import ToolExecution
+
+        context = data.get("additional_context")
+        return cls(
+            criteria=[str(c) for c in data.get("criteria") or []],
+            verdicts=[CriterionVerdict.model_validate(v) for v in data.get("verdicts") or []],
+            summary=str(data.get("summary") or ""),
+            additional_context=str(context) if context is not None else None,
+            messages_count=int(data.get("messages_count") or 0),
+            references=[MessageReferences.model_validate(r) for r in data.get("references") or []],
+            tool_executions=[ToolExecution.from_dict(t) for t in data.get("tool_executions") or []],
+            time=float(data.get("time") or 0.0),
+        )
+
+
 class ScenarioStatus(StrEnum):
     """Scenario outcome in reports.
 
@@ -477,9 +568,14 @@ class ScenarioResult:
     failure_reason: str | None = None
     # The scenario did not finish because the harness broke (SimulationHarnessError).
     harness_error: bool = False
-    # Wall-clock seconds for the whole scenario and for the agent's turns alone.
+    # Wall-clock seconds for the whole scenario, the agent's turns, the judge's calls
+    # (verdicts, continue/conclude decisions, score) and the user simulator's calls.
     total_time: float = 0.0
     agent_time: float = 0.0
+    judge_time: float = 0.0
+    simulator_time: float = 0.0
+    # Every verdict call of the judge with its evidence, in call order.
+    judge_calls: list[JudgeCall] = field(default_factory=list)
 
     @property
     def status(self) -> ScenarioStatus:

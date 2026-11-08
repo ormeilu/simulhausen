@@ -1,7 +1,10 @@
 import json
 import re
+from dataclasses import replace
 
 import pytest
+from agno.models.message import MessageReferences
+from agno.models.response import ToolExecution
 
 import simulhausen as sim
 from simulhausen.reporting import (
@@ -20,7 +23,7 @@ from simulhausen.reporting import (
     to_json,
     to_markdown,
 )
-from simulhausen.types import CriterionVerdict, JudgeScore, ScenarioResult, ScenarioStatus
+from simulhausen.types import CriterionVerdict, JudgeCall, JudgeScore, ScenarioResult, ScenarioStatus
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +60,8 @@ def _result(
         harness_error=harness_error,
         total_time=2.5,
         agent_time=1.0,
+        judge_time=0.75,
+        simulator_time=0.5,
     )
 
 
@@ -105,6 +110,7 @@ def test_summarize_counts() -> None:
     assert stats.script_errors == 1
     assert stats.turns_total == 2
     assert (stats.total_time, stats.agent_time) == (5.0, 2.0)
+    assert (stats.judge_time, stats.simulator_time) == (1.5, 1.0)
 
 
 def test_summarize_counts_inconclusive_criteria_and_excludes_warn_from_the_pass_rate() -> None:
@@ -213,7 +219,7 @@ def test_markdown_structure() -> None:
     assert "```text\nUser: hi\nAgent: hello\n```" in md
     assert "### 📊 Summary" in md
     assert "| Pass rate | **50%** (PASS 1 / FAIL 1 of 2 judged) |" in md
-    assert "| Time | 5.0s total, 2.0s in the agent |" in md
+    assert "| Time | 5.0s total: 2.0s in the agent, 1.5s in the judge, 1.0s in the user simulator |" in md
     assert "<details open>" not in md
 
 
@@ -373,6 +379,52 @@ def test_records_survive_the_xdist_round_trip() -> None:
     records.append(ScenarioRecord(result=_result("untied"), test_id=None))
 
     payload = serialize_records(records)
+
+    assert deserialize_records(json.loads(json.dumps(payload))) == records
+
+
+def _judge_call() -> JudgeCall:
+    return JudgeCall(
+        criteria=["criterion"],
+        verdicts=[_verdict("passed")],
+        summary="fine",
+        additional_context="db: row 1",
+        messages_count=2,
+        references=[MessageReferences(query="q", references=[{"content": "policy"}], time=0.1)],
+        tool_executions=[ToolExecution(tool_name="lookup", tool_args={"id": 1}, result="found", created_at=7)],
+        time=0.25,
+    )
+
+
+def test_to_json_leaves_the_judge_evidence_out_by_default() -> None:
+    records = _records(replace(_result(), judge_calls=[_judge_call()]))
+
+    [scenario] = json.loads(to_json(records))["scenarios"]
+
+    assert "judge_calls" not in scenario
+    assert (scenario["judge_time"], scenario["simulator_time"]) == (0.75, 0.5)
+
+
+def test_to_json_with_evidence_writes_every_judge_call() -> None:
+    records = _records(replace(_result(), judge_calls=[_judge_call()]))
+
+    [scenario] = json.loads(to_json(records, evidence=True))["scenarios"]
+
+    [call] = scenario["judge_calls"]
+    assert call["criteria"] == ["criterion"]
+    assert call["additional_context"] == "db: row 1"
+    assert call["messages_count"] == 2
+    assert call["references"] == [{"query": "q", "references": [{"content": "policy"}], "time": 0.1}]
+    assert call["tool_executions"][0]["tool_args"] == {"id": 1}
+    assert call["tool_executions"][0]["result"] == "found"
+    assert call["verdicts"][0]["status"] == "passed"
+    assert (call["summary"], call["time"]) == ("fine", 0.25)
+
+
+def test_judge_calls_survive_the_xdist_round_trip() -> None:
+    records = _records(replace(_result(), judge_calls=[_judge_call(), JudgeCall(criteria=["bare"])]))
+
+    payload = serialize_records(records, evidence=True)
 
     assert deserialize_records(json.loads(json.dumps(payload))) == records
 

@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 
 import simulhausen as sim
-from simulhausen import ScenarioResult, collector
+from simulhausen import JudgeCall, ScenarioResult, collector
 from simulhausen.pytest_plugin import (
     pytest_runtest_protocol,
     pytest_sessionfinish,
@@ -155,6 +155,7 @@ def test_options_are_listed_in_help(pytester: pytest.Pytester) -> None:
             "*scenario simulations (simulhausen):*",
             "*--sim-benchmark*",
             "*--sim-report=PATH*",
+            "*--sim-report-evidence*",
             "*--sim-report-md=PATH*",
             "*--sim-debug*",
         ]
@@ -166,6 +167,12 @@ def test_options_are_listed_in_help(pytester: pytest.Pytester) -> None:
 
 def _result(name: str, *, success: bool = True) -> ScenarioResult:
     return ScenarioResult(name=name, description="", success=success, turns=1)
+
+
+def _judged(name: str) -> ScenarioResult:
+    return ScenarioResult(
+        name=name, description="", success=True, turns=1, judge_calls=[JudgeCall(criteria=["polite"])]
+    )
 
 
 def _config(pytester: pytest.Pytester, *args: str) -> pytest.Config:
@@ -210,6 +217,31 @@ def test_session_finish_writes_reports_in_a_stable_order(pytester: pytest.Pytest
         ("t.py::test_b", "b"),
     ]
     assert (pytester.path / "sim.md").read_text(encoding="utf-8").startswith(REPORT_MARKER)
+
+
+@pytest.mark.parametrize("evidence", [False, True])
+def test_session_finish_writes_judge_evidence_only_when_asked(pytester: pytest.Pytester, evidence: bool) -> None:
+    config = _config(pytester, "--sim-report=sim.json", *(["--sim-report-evidence"] if evidence else []))
+    _fill(("t.py::test_a", _judged("a")))
+
+    pytest_sessionfinish(_session(config), 0)
+
+    [scenario] = json.loads((pytester.path / "sim.json").read_text(encoding="utf-8"))["scenarios"]
+    assert ("judge_calls" in scenario) is evidence
+    if evidence:
+        assert scenario["judge_calls"][0]["criteria"] == ["polite"]
+
+
+@pytest.mark.parametrize("evidence", [False, True])
+def test_xdist_worker_ships_judge_evidence_only_when_asked(pytester: pytest.Pytester, evidence: bool) -> None:
+    config = _config(pytester, *(["--sim-report-evidence"] if evidence else []))
+    output = _as_xdist_worker(config)
+    _fill(("t.py::test_a", _judged("a")))
+
+    pytest_sessionfinish(_session(config), 0)
+
+    [shipped] = output["simulhausen_records"]
+    assert ("judge_calls" in shipped) is evidence
 
 
 def test_session_finish_without_results_writes_nothing(pytester: pytest.Pytester) -> None:

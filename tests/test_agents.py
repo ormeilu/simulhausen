@@ -22,6 +22,7 @@ from simulhausen import CriterionVerdict, JudgeAgent, JudgeVerdict, ScenarioStat
 from simulhausen.agents import STRUCTURED_ATTEMPTS, _arun_structured, _fence, _numbered, _TurnDecision
 from simulhausen.prompts import (
     JUDGE_DECISION_PROMPT,
+    JUDGE_PARSER_PROMPT,
     JUDGE_VERDICT_PROMPT,
     PER_CRITERION_RULES,
     STRUCTURED_RETRY_NUDGE,
@@ -356,6 +357,52 @@ async def test_judge_builds_the_verdict_prompt_and_returns_aligned_verdicts(agno
     assert "orders: none" in agno.prompts[0]
 
 
+async def test_judge_with_a_parser_model_keeps_the_status_out_of_requirement(agno: AgnoRecorder) -> None:
+    # What a parser model built from a free-text answer that restated nothing: the status in both fields.
+    agno.responses = [
+        JudgeVerdict.model_validate(
+            {
+                "verdicts": [
+                    {"criterion": "is polite", "requirement": "passed", "reasoning": "kind", "status": "passed"},
+                    {"criterion": "refunds", "requirement": " выполнено ", "reasoning": "no", "status": "failed"},
+                    {"criterion": "cites", "requirement": "", "reasoning": "-", "status": "inconclusive"},
+                ],
+                "summary": "s",
+            }
+        )
+    ]
+
+    judged = await JudgeAgent(["is polite", "refunds", "cites"], MODEL, parser_model=PARSER).judge(_state())
+
+    assert [v.requirement for v in judged.verdicts] == ["", "", ""]
+    assert all(v.requirement != v.status for v in judged.verdicts)
+    assert agno.built[0]["parser_model_prompt"] == JUDGE_PARSER_PROMPT
+
+
+async def test_judge_parser_prompt_needs_a_parser_model(agno: AgnoRecorder) -> None:
+    agno.responses = [JudgeVerdict(verdicts=[_verdict()], summary="s")]
+
+    await JudgeAgent(["is polite"], MODEL).judge(_state())
+
+    assert "parser_model_prompt" not in agno.built[0]
+
+
+async def test_judge_parser_prompt_follows_the_configured_parser_model(agno: AgnoRecorder) -> None:
+    sim.configure(parser_model=PARSER)
+    agno.responses = [JudgeVerdict(verdicts=[_verdict()], summary="s")]
+
+    await JudgeAgent(["is polite"], MODEL).judge(_state())
+
+    assert agno.built[0]["parser_model_prompt"] == JUDGE_PARSER_PROMPT
+
+
+def test_verdict_prompt_asks_for_the_requirement_in_the_answer_text() -> None:
+    # The parser can only copy a restatement the judge's free text contains.
+    assert "write all of this out in your answer" in PER_CRITERION_RULES
+    assert "never the status" in PER_CRITERION_RULES
+    assert "never put the status" in JUDGE_PARSER_PROMPT
+
+
 async def test_judge_inline_criteria_override_its_own(agno: AgnoRecorder) -> None:
     agno.responses = [JudgeVerdict(verdicts=[_verdict("x")], summary="s")]
 
@@ -453,6 +500,7 @@ async def test_decide_follows_the_model(agno: AgnoRecorder, decision: str, expec
     )
     assert built["output_schema"] is _TurnDecision
     assert built["parser_model"] is PARSER
+    assert "parser_model_prompt" not in built
     assert "untrusted_transcript_" in agno.prompts[0]
 
 

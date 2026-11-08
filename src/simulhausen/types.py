@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from agno.models.message import MessageReferences
@@ -404,7 +404,13 @@ class CriterionVerdict(BaseModel):
     """The judge's verdict on one criterion.
 
     Field order is the order the judge fills them in: restate the criterion as
-    a positive requirement, reason about it, and only then pick a status.
+    a positive requirement, reason about it, and only then pick a status. With a
+    parser model the judge writes free text and the parser fills the fields, so
+    the prompt asks for that order in the text as well.
+
+    A ``requirement`` of a single word is no restatement: it is the status the
+    parser copied there for want of one ("passed", "fail", "выполнено"), and it
+    is stored as ``""``.
     """
 
     criterion: str = Field(description="The criterion, copied verbatim")
@@ -416,6 +422,12 @@ class CriterionVerdict(BaseModel):
     status: CriterionStatus = Field(
         description="passed, failed, or inconclusive when the evidence to decide is not available"
     )
+
+    @field_validator("requirement")
+    @classmethod
+    def _drop_status_word(cls, value: str) -> str:
+        value = value.strip()
+        return value if len(value.split()) > 1 else ""
 
     @property
     def passed(self) -> bool:

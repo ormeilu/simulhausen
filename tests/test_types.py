@@ -286,6 +286,22 @@ def test_criterion_verdict_flags(status: str, passed: bool, failed: bool, inconc
     assert verdict.requirement == ""
 
 
+@pytest.mark.parametrize(
+    ("requirement", "stored"),
+    [
+        ("passed", ""),
+        ("  fail ", ""),
+        ("выполнено", ""),
+        ("", ""),
+        ("  The agent offers a refund  ", "The agent offers a refund"),
+    ],
+)
+def test_criterion_verdict_drops_a_one_word_requirement(requirement: str, stored: str) -> None:
+    verdict = CriterionVerdict(criterion="c", requirement=requirement, reasoning="r", status="passed")
+
+    assert verdict.requirement == stored
+
+
 def test_criterion_verdict_rejects_unknown_status() -> None:
     with pytest.raises(ValidationError):
         _verdict("maybe")

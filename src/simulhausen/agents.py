@@ -21,6 +21,7 @@ from simulhausen.config import get_config, require_model, resolve_parser_model
 from simulhausen.exceptions import SimulationStructuredOutputError
 from simulhausen.prompts import (
     JUDGE_DECISION_PROMPT,
+    JUDGE_PARSER_PROMPT,
     JUDGE_VERDICT_PROMPT,
     PER_CRITERION_RULES,
     STRUCTURED_RETRY_NUDGE,
@@ -311,17 +312,27 @@ class JudgeAgent:
             "max_discovery_steps": self.max_discovery_steps,
         }
 
-    def _agent(self, instructions: str, schema: type[BaseModel], discovery: _Discovery | None = None) -> Agent:
+    def _agent(
+        self,
+        instructions: str,
+        schema: type[BaseModel],
+        discovery: _Discovery | None = None,
+        *,
+        parser_prompt: str | None = None,
+    ) -> Agent:
         extra: dict[str, Any] = {}
         if discovery is not None:
             # agno's limit is soft: it answers calls past the limit with an error result and
             # asks the model again, so the run ends when the model stops calling tools.
             extra = {"tools": discovery.tools, "tool_call_limit": self.max_discovery_steps}
+        parser_model = resolve_parser_model(self._parser_model)
+        if parser_model is not None and parser_prompt is not None:
+            extra["parser_model_prompt"] = parser_prompt
         return Agent(
             model=require_model(self._model),
             instructions=instructions,
             output_schema=schema,
-            parser_model=resolve_parser_model(self._parser_model),
+            parser_model=parser_model,
             telemetry=False,
             **extra,
         )
@@ -386,7 +397,12 @@ class JudgeAgent:
         )
         discovery = self._discovery(state)
         judged = await _arun_structured(
-            self._agent(self._with_discovery_rules(instructions, discovery), JudgeVerdict, discovery),
+            self._agent(
+                self._with_discovery_rules(instructions, discovery),
+                JudgeVerdict,
+                discovery,
+                parser_prompt=JUDGE_PARSER_PROMPT,
+            ),
             self.evidence(state, additional_context, skeleton=discovery is not None),
             JudgeVerdict,
             scenario=state.name,

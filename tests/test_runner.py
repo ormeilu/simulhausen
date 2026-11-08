@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -29,6 +31,8 @@ from simulhausen import (
     collector,
 )
 from simulhausen._cache import ScenarioContext, current_context
+from simulhausen.exceptions import SimulationStructuredOutputError
+from simulhausen.reporting import to_json
 from simulhausen.script import ScriptStep
 
 type Round = CriterionStatus | list[CriterionStatus]
@@ -1032,6 +1036,128 @@ async def test_fixed_replies_cost_no_agent_time() -> None:
     assert result.total_time > 0
 
 
+class SlowUser(ScriptedUser):
+    async def next_turn(self, state: ScenarioState) -> UserTurn:
+        await asyncio.sleep(0.02)
+        return await super().next_turn(state)
+
+
+class SlowJudge(FakeJudge):
+    async def judge(
+        self,
+        state: ScenarioState,
+        criteria: Sequence[str] | None = None,
+        *,
+        additional_context: str | None = None,
+    ) -> JudgeVerdict:
+        await asyncio.sleep(0.02)
+        return await super().judge(state, criteria, additional_context=additional_context)
+
+
+async def test_judge_and_simulator_time_are_split_out() -> None:
+    result = await play(ReplyAdapter(), SlowUser("hello"), SlowJudge(), script=[sim.proceed(turns=1), sim.judge()])
+
+    assert result.judge_time >= 0.015
+    assert result.simulator_time >= 0.015
+    assert result.total_time >= result.judge_time + result.simulator_time + result.agent_time
+    assert result.judge_calls[0].time >= 0.015
+
+
+async def test_fixed_messages_cost_no_judge_or_simulator_time() -> None:
+    result = await play(ReplyAdapter(), script=[sim.user("hi"), sim.agent("fixed")])
+
+    assert (result.judge_time, result.simulator_time, result.judge_calls) == (0.0, 0.0, [])
+
+
+async def test_judge_time_counts_a_call_that_raises() -> None:
+    class BrokenJudge(FakeJudge):
+        async def judge(self, state: ScenarioState, criteria: Sequence[str] | None = None, **_: Any) -> JudgeVerdict:
+            await asyncio.sleep(0.02)
+            raise SimulationStructuredOutputError("no verdict")
+
+    with pytest.raises(SimulationStructuredOutputError):
+        await play(ReplyAdapter(), BrokenJudge(), script=[sim.user("hi"), sim.agent(), sim.judge()])
+
+    result = collector.records[0].result
+    assert result.judge_time >= 0.015
+    assert result.judge_calls == []
+
+
+async def test_judge_calls_keep_the_evidence_each_verdict_saw() -> None:
+    tool = ToolExecution(tool_name="lookup", tool_args={"id": 1}, result="found")
+    refs = MessageReferences(query="q", references=[{"content": "policy"}])
+    adapter = ReplyAdapter(AgentTurn(content="first", tools=[tool], references=[refs]), "second")
+    judge = FakeJudge(["is polite"], rounds=["passed"])
+
+    result = await play(
+        adapter,
+        judge,
+        script=[
+            sim.user("hi"),
+            sim.agent(),
+            sim.judge(criteria=["looks it up"], additional_context="db: row 1"),
+            sim.user("more"),
+            sim.agent(),
+            sim.judge(),
+        ],
+    )
+
+    checkpoint, final = result.judge_calls
+    assert (checkpoint.criteria, checkpoint.additional_context, checkpoint.messages_count) == (
+        ["looks it up"],
+        "db: row 1",
+        2,
+    )
+    assert [v.criterion for v in checkpoint.verdicts] == ["looks it up"]
+    assert (checkpoint.tool_executions, checkpoint.references) == ([tool], [refs])
+    assert (final.criteria, final.additional_context, final.messages_count) == (["is polite"], None, 4)
+    assert final.summary == "judge summary"
+
+
+def _unfenced(text: str) -> str:
+    return re.sub(r"(untrusted_[a-z]+)_[0-9a-f]{32}", r"\1", text)
+
+
+async def test_a_replayed_state_gives_the_judge_the_same_evidence() -> None:
+    seen: list[str] = []
+
+    class RecordingJudge(FakeJudge):
+        async def judge(
+            self,
+            state: ScenarioState,
+            criteria: Sequence[str] | None = None,
+            *,
+            additional_context: str | None = None,
+        ) -> JudgeVerdict:
+            seen.append(self.evidence(state, additional_context))
+            return await super().judge(state, criteria, additional_context=additional_context)
+
+    tool = ToolExecution(tool_name="lookup", tool_args={"id": 1}, result="found", tool_call_error=True)
+    refs = MessageReferences(query="q", references=[{"content": "policy", "meta_data": {"url": "https://x"}}])
+    adapter = ReplyAdapter(AgentTurn(content="first", tools=[tool], references=[refs]), "second")
+    await play(
+        adapter,
+        RecordingJudge(),
+        script=[
+            sim.user("hi"),
+            sim.agent(),
+            sim.judge(criteria=["c"], additional_context="ctx"),
+            sim.user("more"),
+            sim.agent(),
+            sim.judge(),
+        ],
+    )
+
+    [scenario] = json.loads(to_json(collector.records, evidence=True))["scenarios"]
+    for index, call in enumerate(scenario["judge_calls"]):
+        state = ScenarioState.from_report(scenario, index)
+        replayed = JudgeAgent.evidence(state, call["additional_context"])
+        # Fence tags carry a random suffix per call; everything else must match.
+        assert _unfenced(replayed) == _unfenced(seen[index])
+        assert "Tool executions:" in replayed
+        assert "Reference material" in replayed
+
+
 async def test_every_result_lands_in_the_collector_with_its_test_id() -> None:
     collector.set_current_test("tests/test_x.py::test_case")
 
@@ -1148,7 +1274,14 @@ def _model(model_id: str) -> Model:
 
 def _outcome(result: ScenarioResult) -> ScenarioResult:
     """The result without wall-clock times, which differ between a recorded run and a replay."""
-    return replace(result, total_time=0.0, agent_time=0.0)
+    return replace(
+        result,
+        total_time=0.0,
+        agent_time=0.0,
+        judge_time=0.0,
+        simulator_time=0.0,
+        judge_calls=[replace(call, time=0.0) for call in result.judge_calls],
+    )
 
 
 def _entry_count(directory: Path) -> int:

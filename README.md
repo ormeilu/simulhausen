@@ -152,7 +152,11 @@ a failure turns the pass rate into a measure of helper-LLM reliability. `pass_ra
 the WARN count is reported next to it. Harness errors are still raised, so a plain pytest run fails on them.
 
 `ScenarioResult` carries `verdicts`, `passed_criteria`, `failed_criteria`, `inconclusive_criteria`, the judge's
-`reasoning`, `messages`, `tool_calls`, `turns`, `total_time` and `agent_time`.
+`reasoning`, `messages`, `tool_calls`, `turns` and `judge_calls`. Times are split into `total_time`, `agent_time`,
+`judge_time` (verdicts, continue/conclude decisions and the score) and `simulator_time`. Each entry of
+`judge_calls` is a `JudgeCall` with the criteria, the `additional_context`, the references and tool executions the
+judge saw, `messages_count` (the judge saw `messages[:messages_count]`), the verdicts, the summary and the call's
+wall time.
 
 For an overall quality gate on top of the criteria, `JudgeAgent(criteria, score_threshold=7)` also grades the
 whole dialogue 1-10 with agno's `JudgeScorer`. Calibrate the threshold on known good and bad runs first.
@@ -420,7 +424,29 @@ uv run pytest -m simulation                    # failures fail the run
 uv run pytest -m simulation --sim-benchmark \
   --sim-report reports/simulations.json \
   --sim-report-md reports/simulations.md       # always exits 0, writes reports
+uv run pytest -m simulation --sim-report reports/simulations.json \
+  --sim-report-evidence                        # JSON with each judge call's evidence
 uv run pytest -m simulation -k refund -s --sim-debug  # you type the user's messages
+```
+
+The JSON report keeps transcripts, verdicts and the names of the tools that ran. `--sim-report-evidence` adds
+every judge call with what the judge ruled on: criteria, additional context, RAG references, tool arguments and
+results. It is opt-in because references make the file much bigger and may hold data you do not want in CI
+artifacts. With the evidence in the report, a verdict can be replayed, for example to compare judge models or
+prompts on stored dialogues:
+
+```python
+import json
+
+import simulhausen as sim
+
+report = json.loads(open("reports/simulations.json").read())
+for scenario in report["scenarios"]:
+    for index, call in enumerate(scenario.get("judge_calls", [])):
+        state = sim.ScenarioState.from_report(scenario, index)
+        verdict = await sim.JudgeAgent(model=other_model).judge(
+            state, call["criteria"], additional_context=call["additional_context"]
+        )
 ```
 
 Benchmark mode is for CI jobs that should stay green and post the outcome instead. After any run with

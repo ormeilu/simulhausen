@@ -29,7 +29,7 @@ from simulhausen.reporting import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
 _WORKER_RECORDS_KEY = "simulhausen_records"
 
@@ -52,6 +52,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="benchmark mode: collect the scenario report and exit 0 even when scenarios fail",
     )
     group.addoption("--sim-report", default=None, metavar="PATH", help="write the JSON scenario report to PATH")
+    group.addoption(
+        "--sim-report-evidence",
+        action="store_true",
+        default=False,
+        help=(
+            "add every judge call's evidence (criteria, additional context, references, tool arguments and "
+            "results) to the --sim-report JSON, to debug or replay verdicts"
+        ),
+    )
     group.addoption(
         "--sim-report-md",
         default=None,
@@ -90,11 +99,17 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     config = session.config
+    evidence = bool(config.getoption("--sim-report-evidence"))
     if _is_xdist_worker(config):
-        config.workeroutput[_WORKER_RECORDS_KEY] = serialize_records(_ordered_records())  # ty: ignore[unresolved-attribute]
+        payload = serialize_records(_ordered_records(), evidence=evidence)
+        config.workeroutput[_WORKER_RECORDS_KEY] = payload  # ty: ignore[unresolved-attribute]
     elif collector.records:
         records = _ordered_records()
-        for option, render in (("--sim-report", to_json), ("--sim-report-md", to_markdown)):
+        renderers: tuple[tuple[str, Callable[[list[ScenarioRecord]], str]], ...] = (
+            ("--sim-report", lambda records: to_json(records, evidence=evidence)),
+            ("--sim-report-md", to_markdown),
+        )
+        for option, render in renderers:
             if target := config.getoption(option):
                 path = Path(target)
                 path.parent.mkdir(parents=True, exist_ok=True)

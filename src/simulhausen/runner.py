@@ -24,7 +24,7 @@ from simulhausen.script import (
     UserStep,
     proceed,
 )
-from simulhausen.types import AgentAdapter, AgentInput, AgentTurn, ScenarioResult, ScenarioState
+from simulhausen.types import AgentAdapter, AgentInput, AgentTurn, JudgeCall, ScenarioResult, ScenarioState
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -88,6 +88,9 @@ class _Simulation:
         # Transcript length at the last final verdict; None until there is one.
         self.final_judged_at: int | None = None
         self.agent_time = 0.0
+        self.judge_time = 0.0
+        self.simulator_time = 0.0
+        self.judge_calls: list[JudgeCall] = []
 
     @property
     def ended(self) -> bool:
@@ -124,13 +127,21 @@ class _Simulation:
         dialogue so far. Agents with ``cacheable = False`` (a stateful simulator, say) are
         always called.
         """
-        context = caching_context()
-        if context is None or not agent.cacheable:
-            return await call()
-        identity = f"{type(agent).__module__}.{type(agent).__qualname__}.{method}"
-        return await cached_acall(
-            context, identity, {"agent": agent.cache_fingerprint(), "state": self.state, **arguments}, call
-        )
+        started = time.perf_counter()
+        try:
+            context = caching_context()
+            if context is None or not agent.cacheable:
+                return await call()
+            identity = f"{type(agent).__module__}.{type(agent).__qualname__}.{method}"
+            return await cached_acall(
+                context, identity, {"agent": agent.cache_fingerprint(), "state": self.state, **arguments}, call
+            )
+        finally:
+            elapsed = time.perf_counter() - started
+            if isinstance(agent, JudgeAgent):
+                self.judge_time += elapsed
+            else:
+                self.simulator_time += elapsed
 
     async def _simulated_turn(self) -> UserTurn:
         if self.debug and (typed := await self._human_message()) is not None:
@@ -199,14 +210,32 @@ class _Simulation:
     async def _judge_call(
         self, judge: JudgeAgent, criteria: Sequence[str] | None, additional_context: str | None
     ) -> JudgeVerdict:
-        """``judge.judge`` keyed by the criteria it will really apply (its own when ``None``)."""
-        return await self._helper_call(
+        """``judge.judge`` keyed by the criteria it will really apply (its own when ``None``).
+
+        Each call lands in ``judge_calls`` with the evidence the judge saw.
+        """
+        applied = list(judge.criteria if criteria is None else criteria)
+        started = time.perf_counter()
+        judged = await self._helper_call(
             judge,
             "judge",
             lambda: judge.judge(self.state, criteria, additional_context=additional_context),
-            criteria=list(judge.criteria if criteria is None else criteria),
+            criteria=applied,
             additional_context=additional_context,
         )
+        self.judge_calls.append(
+            JudgeCall(
+                criteria=applied,
+                verdicts=list(judged.verdicts),
+                summary=judged.summary,
+                additional_context=additional_context,
+                messages_count=len(self.state.messages),
+                references=list(self.state.references),
+                tool_executions=list(self.state.tool_executions),
+                time=time.perf_counter() - started,
+            )
+        )
+        return judged
 
     async def _decide(self, judge: JudgeAgent) -> bool:
         return await self._helper_call(judge, "decide", lambda: judge.decide(self.state), criteria=judge.criteria)
@@ -352,6 +381,9 @@ class _Simulation:
             harness_error=harness_error,
             total_time=total_time,
             agent_time=self.agent_time,
+            judge_time=self.judge_time,
+            simulator_time=self.simulator_time,
+            judge_calls=list(self.judge_calls),
         )
 
 

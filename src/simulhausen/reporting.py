@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from simulhausen.config import get_config
-from simulhausen.types import CriterionVerdict, JudgeScore, ScenarioResult, ScenarioStatus
+from simulhausen.types import CriterionVerdict, JudgeCall, JudgeScore, ScenarioResult, ScenarioStatus
 
 if TYPE_CHECKING:
     from simulhausen.types import Message
@@ -123,6 +123,8 @@ class SummaryStats:
     script_errors: int
     total_time: float
     agent_time: float
+    judge_time: float = 0.0
+    simulator_time: float = 0.0
 
     @property
     def failed(self) -> int:
@@ -159,6 +161,8 @@ def summarize(records: list[ScenarioRecord]) -> SummaryStats:
         script_errors=sum(1 for r in results if r.failure_reason and not r.harness_error),
         total_time=sum(r.total_time for r in results),
         agent_time=sum(r.agent_time for r in results),
+        judge_time=sum(r.judge_time for r in results),
+        simulator_time=sum(r.simulator_time for r in results),
     )
 
 
@@ -268,7 +272,8 @@ def render_console(records: list[ScenarioRecord]) -> None:
         f"({stats.criteria_inconclusive} inconclusive); "
         f"turns {stats.turns_total}; tool calls {stats.tool_calls_total} "
         f"({len(stats.unique_tools)} unique); script/runtime errors {stats.script_errors}; "
-        f"time {stats.total_time:.1f}s (agent {stats.agent_time:.1f}s)"
+        f"time {stats.total_time:.1f}s (agent {stats.agent_time:.1f}s, judge {stats.judge_time:.1f}s, "
+        f"simulator {stats.simulator_time:.1f}s)"
     )
 
 
@@ -395,14 +400,24 @@ def to_markdown(records: list[ScenarioRecord]) -> str:
         f"| Dialogue turns | {stats.turns_total} |",
         (f"| Tool calls | {stats.tool_calls_total} ({', '.join(f'`{t}`' for t in stats.unique_tools) or '-'}) |"),
         f"| Script/runtime errors | {stats.script_errors} |",
-        f"| Time | {stats.total_time:.1f}s total, {stats.agent_time:.1f}s in the agent |",
+        (
+            f"| Time | {stats.total_time:.1f}s total: {stats.agent_time:.1f}s in the agent, "
+            f"{stats.judge_time:.1f}s in the judge, {stats.simulator_time:.1f}s in the user simulator |"
+        ),
         "",
     ]
     return "\n".join(lines)
 
 
-def to_json(records: list[ScenarioRecord]) -> str:
-    """JSON report (a CI artifact): full results, transcripts included."""
+def to_json(records: list[ScenarioRecord], *, evidence: bool = False) -> str:
+    """JSON report (a CI artifact): full results, transcripts included.
+
+    ``evidence=True`` (``--sim-report-evidence``) adds every judge call with what
+    the judge ruled on: criteria, additional context, references, tool
+    executions with arguments and results. It is off by default, since
+    references make the file much bigger and may hold data that should not
+    end up in CI artifacts.
+    """
     stats = summarize(records)
     payload = {
         "total": stats.total,
@@ -410,13 +425,13 @@ def to_json(records: list[ScenarioRecord]) -> str:
         "failed": stats.failed,
         "warned": stats.warned,
         "pass_rate": round(stats.pass_rate, 2),
-        "scenarios": serialize_records(records),
+        "scenarios": serialize_records(records, evidence=evidence),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def serialize_records(records: list[ScenarioRecord]) -> list[dict[str, Any]]:
-    """Plain, execnet-safe payload (the pytest-xdist worker -> controller hop)."""
+def serialize_records(records: list[ScenarioRecord], *, evidence: bool = False) -> list[dict[str, Any]]:
+    """Plain, execnet-safe payload (the pytest-xdist worker -> controller hop); see :func:`to_json`."""
     return [
         {
             "test_id": record.test_id,
@@ -431,10 +446,13 @@ def serialize_records(records: list[ScenarioRecord]) -> list[dict[str, Any]]:
             "tool_calls": record.result.tool_calls,
             "total_time": record.result.total_time,
             "agent_time": record.result.agent_time,
+            "judge_time": record.result.judge_time,
+            "simulator_time": record.result.simulator_time,
             "judge_score": record.result.judge_score.model_dump(mode="json") if record.result.judge_score else None,
             "verdicts": [verdict.model_dump(mode="json") for verdict in record.result.verdicts],
             "messages": [dict(message) for message in record.result.messages],
         }
+        | ({"judge_calls": [call.to_dict() for call in record.result.judge_calls]} if evidence else {})
         for record in records
     ]
 
@@ -466,6 +484,9 @@ def deserialize_records(payload: list[dict[str, Any]]) -> list[ScenarioRecord]:
                     tool_calls=[str(name) for name in item.get("tool_calls") or []],
                     total_time=float(item.get("total_time") or 0.0),
                     agent_time=float(item.get("agent_time") or 0.0),
+                    judge_time=float(item.get("judge_time") or 0.0),
+                    simulator_time=float(item.get("simulator_time") or 0.0),
+                    judge_calls=[JudgeCall.from_dict(call) for call in item.get("judge_calls") or []],
                     judge_score=JudgeScore.model_validate(judge_score) if judge_score is not None else None,
                     verdicts=[CriterionVerdict.model_validate(verdict) for verdict in item.get("verdicts") or []],
                     messages=messages,

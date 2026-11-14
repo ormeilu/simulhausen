@@ -1,7 +1,7 @@
 # simulhausen
 
-Local simulation testing for agno agents: an LLM user simulator talks to the agent under test, an LLM judge
-grades the dialogue per criterion. API modelled on LangWatch Scenario; user-facing docs live in `README.md`.
+Local simulation testing for AI agents: an LLM user simulator talks to the agent under test (agno, another
+framework through `simulhausen/frameworks/`, or an HTTP API), an LLM judge grades the dialogue per criterion. API modelled on LangWatch Scenario; user-facing docs live in `README.md`.
 
 ## Working here
 
@@ -15,6 +15,11 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
   litellm): only `simulhausen/harbor/agents.py` imports harbor, and `tests/test_harbor_agent_loading.py` checks
   that a plain import loads neither.
 
+- The frameworks behind `simulhausen/frameworks/*.py` (LangChain, CrewAI, OpenAI Agents and the rest) are not
+  dependencies and are not in `uv.lock`. An adapter module imports nothing from its framework at import time: it
+  duck-types, or gets the module through `require()` from `frameworks/_base.py` inside the call.
+  `tests/test_frameworks_base.py` checks that `import simulhausen` loads none of them.
+
 ## Tests
 
 - Tests never call a model. Fake the helper agents by subclassing `UserSimulatorAgent` / `JudgeAgent`, or
@@ -25,6 +30,12 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
 - `addopts` carries `-p no:simulhausen` on purpose: the entry-point plugin would import the package before
   coverage starts. Plugin behaviour is tested through `pytester.runpytest_subprocess`, where the entry point loads
   normally.
+- Each framework adapter has two test files. `tests/test_frameworks_<name>.py` uses hand-written fakes, never
+  imports the framework and covers the module. `tests/contract/test_<name>_contract.py` drives the real library
+  with a scripted model (no network) and is skipped in the project environment; `just contract <name>` installs
+  the framework into an overlay and runs it, and the `contract` CI job does that for every framework against its
+  latest release. ty skips `tests/contract`. A new adapter gets both files, a line in the justfile's `contract`
+  recipe and in the CI matrix, an export in `__init__.py` and a row in the README table.
 - `examples/` has its own `pytest.ini` and calls a real model (`OPENAI_API_KEY=... uv run --with openai pytest
   examples`); CI only lints and type-checks it.
 

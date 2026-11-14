@@ -1,7 +1,7 @@
 [project]
 name = "simulhausen"
 version = "0.4.0"
-description = "Local simulation testing for agno agents: an LLM plays the user, an LLM judge grades the dialogue criterion by criterion."
+description = "Local simulation testing for AI agents (agno, LangChain, CrewAI, OpenAI Agents, Google ADK and more): an LLM plays the user, an LLM judge grades the dialogue criterion by criterion."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -9,7 +9,10 @@ authors = [
     { name = "Ilya Lubenets", email = "lubenets.ilya.igorevich@gmail.com" }
 ]
 requires-python = ">=3.12"
-keywords = ["agents", "agno", "llm", "testing", "simulation", "evaluation", "llm-as-a-judge", "pytest"]
+keywords = [
+    "agents", "agno", "langchain", "langgraph", "crewai", "openai-agents", "google-adk", "pydantic-ai", "llm",
+    "testing", "simulation", "evaluation", "llm-as-a-judge", "pytest",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: Pytest",
@@ -166,6 +169,9 @@ python-version = "3.12"
 
 [tool.ty.src]
 include = ["src", "tests", "examples"]
+# The contract tests import the frameworks themselves, which the project environment does not have;
+# each runs in its own overlay (`just contract <framework>`).
+exclude = ["tests/contract"]
 
 [tool.ty.rules]
 unused-ignore-comment = "ignore"

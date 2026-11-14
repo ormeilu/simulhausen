@@ -34,6 +34,39 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
       - run: uv run pytest --cov-fail-under=95
+  # Each framework adapter against the real library with a scripted model: no network, no API keys.
+  # The frameworks are not in uv.lock; every job installs the latest release into its own overlay,
+  # so a breaking release of one framework shows up here and nowhere else.
+  contract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework:
+          - ag2
+          - agent_framework
+          - autogen
+          - camel
+          - claude_agent
+          - crewai
+          - deepagents
+          - dspy
+          - google_adk
+          - haystack
+          - langchain
+          - llamaindex
+          - openai_agents
+          - pydantic_ai
+          - smolagents
+          - strands
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run just contract ${{ matrix.framework }}
   build:
     runs-on: ubuntu-latest
     steps:

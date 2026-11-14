@@ -30,6 +30,7 @@ __all__ = [
     "ScenarioState",
     "ScenarioStatus",
     "ToolCall",
+    "ToolCallStatus",
     "ToolCalls",
 ]
 
@@ -120,12 +121,21 @@ def _is_clean(tool: ToolExecution) -> bool:
     return bool(tool.tool_name) and not tool.tool_call_error and not tool.is_paused
 
 
+def _tool_status(tool: ToolExecution) -> ToolCallStatus:
+    return "paused" if tool.is_paused else "error" if tool.tool_call_error else "success"
+
+
+type ToolCallStatus = Literal["success", "error", "paused"]
+
+
 @dataclass(frozen=True)
 class ToolCall:
-    """One clean tool execution, as ``state.tool_calls()`` returns it.
+    """One tool execution, as ``state.tool_calls()`` returns it.
 
     ``turn`` is the 0-based agent turn the call belongs to (``None`` when the
-    execution was added to the state by hand). The empty call that
+    execution was added to the state by hand). ``status`` is ``"success"`` for
+    a clean execution; ``"error"`` and ``"paused"`` calls appear only with
+    ``state.tool_calls(include_errors=True)``. The empty call that
     ``ToolCalls.first``/``.last`` return for a tool that never ran is falsy.
     """
 
@@ -134,13 +144,29 @@ class ToolCall:
     output: str | None = None
     turn: int | None = None
     execution: ToolExecution | None = None
+    status: ToolCallStatus = "success"
 
     def __bool__(self) -> bool:
         return self.execution is not None
 
+    @property
+    def ok(self) -> bool:
+        """Executed without error and not paused."""
+        return self.status == "success"
+
+    @property
+    def error(self) -> bool:
+        """The execution ended in an error (its text is in ``output``)."""
+        return self.status == "error"
+
+    @property
+    def paused(self) -> bool:
+        """Requested but not run: waiting for confirmation, user input or an external executor."""
+        return self.status == "paused"
+
 
 class ToolCalls(Sequence[ToolCall]):
-    """Clean calls of one tool (or of all tools) in call order.
+    """Calls of one tool (or of all tools) in call order.
 
     A sequence with the picks ``first`` and ``last`` and the columns
     ``inputs`` and ``outputs``, so assertions read naturally::
@@ -363,25 +389,44 @@ class ScenarioState:
         """
         return any(tool.tool_name == tool_name and _is_clean(tool) for tool in self.tool_executions)
 
-    def tool_calls(self, tool_name: str | None = None) -> ToolCalls:
-        """Clean calls of ``tool_name`` (of every tool when ``None``), in call order."""
-        return ToolCalls(
-            [
-                ToolCall(
-                    name=tool.tool_name or "",
-                    input=tool.tool_args,
-                    output=tool.result,
-                    turn=self._turn_of(tool),
-                    execution=tool,
-                )
-                for tool in self.tool_executions
-                if _is_clean(tool) and (tool_name is None or tool.tool_name == tool_name)
-            ],
-            name=tool_name,
-        )
+    def tool_calls(
+        self, tool_name: str | None = None, *, include_errors: bool = False, turn: int | None = None
+    ) -> ToolCalls:
+        """Calls of ``tool_name`` (of every tool when ``None``), in call order.
 
-    def _turn_of(self, item: object) -> int | None:
-        """0-based agent turn that brought ``item``; ``None`` when it was added by hand."""
+        Only clean executions by default, like ``has_tool_call``. With
+        ``include_errors=True`` the calls that errored or are paused come too,
+        told apart by ``ToolCall.status`` (``.ok``, ``.error``, ``.paused``).
+        ``turn`` keeps the calls of one 0-based agent turn::
+
+            retried = state.tool_calls("open_login_form", include_errors=True, turn=1)
+            assert not retried, "the agent showed the login form again"
+        """
+        calls = [
+            ToolCall(
+                name=tool.tool_name or "",
+                input=tool.tool_args,
+                output=tool.result,
+                turn=self.turn_of(tool),
+                execution=tool,
+                status=_tool_status(tool),
+            )
+            for tool in self.tool_executions
+            if tool.tool_name
+            and (include_errors or _is_clean(tool))
+            and (tool_name is None or tool.tool_name == tool_name)
+        ]
+        if turn is not None:
+            calls = [call for call in calls if call.turn == turn]
+        return ToolCalls(calls, name=tool_name)
+
+    def turn_of(self, item: object) -> int | None:
+        """0-based agent turn that brought ``item``, a tool execution or a reference of this state.
+
+        Works for failed and paused executions too, which ``tool_calls()``
+        leaves out by default. ``None`` when the item was added to the state by
+        hand or is not part of it.
+        """
         origin = self._origins.get(id(item))
         if origin is None:
             return None
@@ -426,7 +471,7 @@ class ScenarioState:
         """
         blocks: list[str] = []
         for tool in self.tool_executions:
-            status = "paused" if tool.is_paused else "error" if tool.tool_call_error else "success"
+            status = _tool_status(tool)
             block = f"Tool: {tool.tool_name or 'unknown'}\nStatus: {status}"
             if tool.tool_args:
                 block += f"\nArguments: {tool.tool_args}"

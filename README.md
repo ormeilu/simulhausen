@@ -195,7 +195,7 @@ state.tool_call_names()                     # names in call order, with repeats
 state.has_tool_calls_in_order(["search", "lookup_order"])  # subsequence; other calls may sit between
 state.last_tool_call("lookup_order")        # the ToolExecution, or None
 
-calls = state.tool_calls("lookup_order")    # ToolCalls: a sequence of ToolCall(name, input, output, turn)
+calls = state.tool_calls("lookup_order")    # ToolCalls: a sequence of ToolCall(name, input, output, turn, status)
 calls.last.input == {"order_id": "1042"}
 calls.outputs                               # every result, in order
 assert not state.tool_calls("refund").first # an empty, falsy call when the tool never ran
@@ -203,6 +203,18 @@ assert not state.tool_calls("refund").first # an empty, falsy call when the tool
 
 Only clean executions count: a call that errored, was rejected or is paused waiting for confirmation does not
 satisfy `has_tool_call`. That matches `agno.scorer.ToolCallScorer`.
+
+When the failed calls are what you test, ask for them. `include_errors=True` adds the calls that errored or are
+paused, each with its `status` (`"success"`, `"error"`, `"paused"`; also `.ok`, `.error`, `.paused`), and `turn=`
+keeps one agent turn (0-based):
+
+```python
+def no_second_login_form(state: sim.ScenarioState) -> None:
+    again = state.tool_calls("open_login_form", include_errors=True, turn=1)
+    assert not again, "the agent showed the login form again after the user declined"
+```
+
+`state.turn_of(execution)` gives the turn of any tool execution or reference of the state, failed ones included.
 
 The judge sees the same evidence: the transcript, the RAG references the agent retrieved (with source URLs) and
 a capped summary of tool executions, errors included. Each block is fenced with a random per-call tag and the

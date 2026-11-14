@@ -563,3 +563,73 @@ def test_from_report_accepts_a_minimal_scenario() -> None:
 
     assert (state.name, state.description) == ("", "")
     assert state.messages == [{"role": "user", "content": "1"}]
+
+
+# -- failed and paused calls (tool_calls(include_errors=True), turn_of) ------
+
+
+def _login_dialogue() -> tuple[ScenarioState, ToolExecution, ToolExecution]:
+    state = _state()
+    failed = ToolExecution(tool_name="show_my_bookings", tool_args={}, result="login required", tool_call_error=True)
+    paused = ToolExecution(tool_name="open_login_form", tool_args={"reason": "bookings"}, requires_confirmation=True)
+    state.add_user_message("show my bookings")
+    state.add_agent_message("please log in", tools=[failed, paused])
+    state.add_user_message("no thanks")
+    state.add_agent_message("ok", tools=[_executed("search", {"q": "public"}, "found")])
+    return state, failed, paused
+
+
+def test_tool_calls_leave_failed_and_paused_calls_out_by_default() -> None:
+    state, _, _ = _login_dialogue()
+
+    assert [call.name for call in state.tool_calls()] == ["search"]
+    assert state.tool_calls("show_my_bookings") == []
+
+
+def test_include_errors_returns_failed_and_paused_calls_with_their_status_and_turn() -> None:
+    state, failed, paused = _login_dialogue()
+
+    calls = state.tool_calls(include_errors=True)
+
+    assert [(call.name, call.status, call.turn) for call in calls] == [
+        ("show_my_bookings", "error", 0),
+        ("open_login_form", "paused", 0),
+        ("search", "success", 1),
+    ]
+    assert [call.ok for call in calls] == [False, False, True]
+    assert (calls[0].error, calls[0].paused) == (True, False)
+    assert (calls[1].error, calls[1].paused) == (False, True)
+    assert calls[0].output == "login required"
+    assert calls[0].execution is failed
+    assert state.tool_calls("open_login_form", include_errors=True).last.execution is paused
+
+
+def test_the_turn_filter_answers_the_issue_18_question() -> None:
+    state, _, _ = _login_dialogue()
+    login_tools = {"show_my_bookings", "open_login_form"}
+
+    again = [call for call in state.tool_calls(include_errors=True, turn=1) if call.name in login_tools]
+
+    assert again == []
+    assert len(state.tool_calls(include_errors=True, turn=0)) == 2
+    assert [call.name for call in state.tool_calls(turn=1)] == ["search"]
+    assert state.tool_calls("search", turn=0) == []
+
+
+def test_turn_of_is_public_and_covers_failed_executions_and_references() -> None:
+    state, failed, paused = _login_dialogue()
+    reference = MessageReferences(query="q", references=["doc"])
+    state.add_user_message("more")
+    state.add_agent_message("here", references=[reference])
+
+    assert state.turn_of(failed) == 0
+    assert state.turn_of(paused) == 0
+    assert state.turn_of(reference) == 2
+    assert state.turn_of(_executed("stranger", {}, "x")) is None
+
+
+def test_an_execution_without_a_name_is_never_a_call() -> None:
+    state = _state()
+    state.tool_executions = [ToolExecution(tool_name=None, tool_call_error=True)]
+
+    assert state.tool_calls(include_errors=True) == []

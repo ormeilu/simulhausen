@@ -61,6 +61,7 @@ from simulhausen.types import (
     ScenarioStatus,
     ToolCall,
     ToolCalls,
+    ToolCallStatus,
 )
 
 try:
@@ -95,6 +96,7 @@ __all__ = [
     "SimulationHarnessError",
     "SimulationStructuredOutputError",
     "ToolCall",
+    "ToolCallStatus",
     "ToolCalls",
     "UserSimulatorAgent",
     "UserTurn",

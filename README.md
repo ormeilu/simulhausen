@@ -5,9 +5,15 @@
 [![CI](https://github.com/ormeilu/simulhausen/actions/workflows/ci.yml/badge.svg)](https://github.com/ormeilu/simulhausen/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ormeilu/simulhausen/blob/main/LICENSE)
 
-Simulation testing for [agno](https://github.com/agno-agi/agno) agents that runs entirely on your side.
-An LLM plays the user and holds a multi-turn dialogue with your agent, team or workflow. Then an LLM judge
-grades the result against your criteria, one verdict and one reason per criterion.
+Simulation testing for AI agents that runs entirely on your side. An LLM plays the user and holds a multi-turn
+dialogue with your agent, team or workflow. Then an LLM judge grades the result against your criteria, one
+verdict and one reason per criterion.
+
+The agent under test can be built with [agno](https://github.com/agno-agi/agno), LangChain, LangGraph or Deep
+Agents, CrewAI, the OpenAI Agents SDK, the Claude Agent SDK, Google ADK, Pydantic AI, LlamaIndex, smolagents,
+CAMEL, AutoGen, AG2, Microsoft Agent Framework, Strands, Haystack or DSPy, or sit behind an HTTP API (AgentOS,
+OpenAI-compatible, A2A, LangGraph Platform). Tool assertions, token usage and reports work the same for all of
+them.
 
 The API follows [LangWatch Scenario](https://github.com/langwatch/scenario), minus the cloud: no LangWatch
 account, no tracing backend, no litellm. The user simulator and the judge are plain agno agents on whatever
@@ -38,7 +44,9 @@ assert result.success, result.failure_summary()
 uv add --dev simulhausen
 ```
 
-or `pip install simulhausen`. Python 3.12+ and agno 3.x. The pytest plugin registers itself on install. The
+or `pip install simulhausen`. Python 3.12+ and agno 3.x (the simulator and the judge run on it, whatever your
+agent is built with). The pytest plugin registers itself on install. The other frameworks are not dependencies:
+an adapter imports its framework when it is called, so install simulhausen next to the one you use. The
 `harbor` extra (`pip install 'simulhausen[harbor]'`) adds the agent classes for Harbor jobs (see Harbor below).
 
 ## Quick start
@@ -165,7 +173,7 @@ whole dialogue 1-10 with agno's `JudgeScorer`. Calibrate the threshold on known 
 
 `result.usage` is what the agent under test spent over the scenario: `input_tokens`, `output_tokens`,
 `total_tokens`, `requests` (model calls) and `cost` when the source reports one. It is `None` when the adapter has
-nothing to read it from. `agno_adapter` and the HTTP adapters fill it from the run's
+nothing to read it from. `agno_adapter`, the framework adapters and the HTTP adapters fill it from the run's
 metrics or the response's `usage`; A2A carries none. `state.usage` holds the sum so far, so a script step can put
 a budget on it:
 
@@ -265,6 +273,88 @@ searched in a string value, and a callable is a predicate (`sim.expect_call("ref
 The judge sees the same evidence: the transcript, the RAG references the agent retrieved (with source URLs) and
 a capped summary of tool executions, errors included. Each block is fenced with a random per-call tag and the
 judge is told never to follow instructions inside them.
+
+## Agents built with other frameworks
+
+An agent does not have to be an agno agent. Each of these factories wraps an agent of another framework that
+runs in the test process and returns an `AgentAdapter` for `agents`, like `agno_adapter`:
+
+```python
+result = await sim.run(
+    name="refund: duplicated charge",
+    description="The user was charged twice for order 1042 and wants the extra charge refunded.",
+    agents=[
+        sim.langchain_adapter(lambda: build_support_graph()),   # or any factory from the table
+        sim.UserSimulatorAgent(),
+        sim.JudgeAgent(criteria=["The agent looks the order up before promising anything"]),
+    ],
+)
+assert result.success, result.failure_summary()
+```
+
+| Factory | Framework | Targets | A turn calls |
+|---|---|---|---|
+| `langchain_adapter` | LangChain, LangGraph, Deep Agents | a compiled graph with a `messages` state (`create_agent`, `create_react_agent`, `create_deep_agent`, supervisor and swarm graphs, your own `StateGraph`), `AgentExecutor`, a chat model or chain | `astream(..., subgraphs=True)` for a graph, `ainvoke` otherwise |
+| `crewai_adapter` | CrewAI | `Agent`, `Crew`, `Flow` | `agent.kickoff_async(messages)`, `crew.akickoff(inputs=...)`, `flow.kickoff_async(inputs=...)` |
+| `openai_agents_adapter` | OpenAI Agents SDK | `Agent`, with handoffs | `Runner.run(agent, input)` |
+| `claude_agent_adapter` | Claude Agent SDK | `ClaudeAgentOptions` | `query(prompt=..., options=...)` (starts the `claude` CLI) |
+| `google_adk_adapter` | Google ADK | `LlmAgent`, workflow agents, agent trees, `App`, a ready `Runner` | `Runner.run_async(user_id, session_id, new_message)` |
+| `pydantic_ai_adapter` | Pydantic AI | `Agent` | `agent.run(prompt, message_history=...)` |
+| `llamaindex_adapter` | LlamaIndex | `FunctionAgent`, `ReActAgent`, `AgentWorkflow` | `agent.run(user_msg=..., chat_history=...)` |
+| `smolagents_adapter` | smolagents | `CodeAgent`, `ToolCallingAgent`, managed agents | `agent.run(task, reset=...)` in a thread |
+| `camel_adapter` | CAMEL | `ChatAgent` | `agent.astep(message)` |
+| `autogen_adapter` | AutoGen AgentChat | `AssistantAgent`, teams (`RoundRobinGroupChat`, `SelectorGroupChat`, `Swarm`) | `target.run(task=[...])` |
+| `ag2_adapter` | AG2 1.x | `Agent` | `agent.ask(*messages)` |
+| `agent_framework_adapter` | Microsoft Agent Framework | an agent, a `Workflow` | `agent.run(messages, session=...)`, `workflow.run(...)` |
+| `strands_adapter` | Strands Agents | `Agent`, `Swarm`, `Graph` | `agent.invoke_async(prompt)` |
+| `haystack_adapter` | Haystack | the `Agent` component, a `Pipeline` that returns chat messages | `run_async(messages=...)` |
+| `dspy_adapter` | DSPy | `dspy.ReAct` or any module with a question-like input | `module.acall(**inputs)` |
+
+What they share:
+
+- `target` is the framework object or a zero-argument factory returning it, so collecting tests builds nothing.
+  Extra keyword arguments go to the framework's run call unchanged, as `agno_adapter` forwards them to `arun`.
+  `content_fn` renders a structured reply as text.
+- Tool calls become the same `ToolExecution` records as with agno: name, arguments, result, error flag. So
+  `state.has_tool_call`, `state.tool_calls(...)` and `state.match_trajectory(...)` work as described above, and
+  the judge sees the same tool evidence. Calls of sub-agents, team members and handoff targets are included
+  where the framework reports them. A call the model asked for that did not run (an interrupt, a pending
+  approval) is recorded as paused and does not count as clean.
+- `result.usage` is filled when the framework reports tokens for the run.
+- `history="session"` (the default) keeps the agent's real context across turns, earlier tool calls included.
+  Where the framework takes a message history, the adapter carries the native one itself and notices when the
+  transcript no longer matches it (a red-team rollback, a reply injected with `sim.agent("text")`), then rebuilds
+  the context from the transcript. Where the agent object owns its memory (CAMEL, smolagents, Strands, AutoGen,
+  a CrewAI `Flow`), the adapter keeps one object per scenario, so pass a factory: a single instance cannot serve
+  two scenarios at once. `history="transcript"` rebuilds the context from the transcript on every call.
+- Framework exceptions propagate unchanged and fail the scenario as a runtime error; there are no retries.
+
+What differs is in each factory's docstring (`help(sim.crewai_adapter)`). The ones that change how you write a
+test:
+
+- **LangChain / LangGraph.** With a checkpointer the adapter uses the thread `thread_id` and sends only new
+  messages; without one it carries the message list. `resume_fn` answers a human-in-the-loop interrupt with
+  `Command(resume=...)`. `create_agent` re-raises tool exceptions by default, so a failing tool fails the
+  scenario unless the graph catches it (`ToolNode(handle_tool_errors=True)`). Not to be confused with
+  `langgraph_adapter`, which talks to a LangGraph server over HTTP.
+- **CrewAI.** A crew has no memory between kickoffs, so the dialogue reaches it as inputs: `{message}` and
+  `{history}` in your task descriptions (`input_key`, `history_key`, or `inputs_fn` for full control). Tool calls
+  come from CrewAI's event bus.
+- **OpenAI Agents SDK.** A guardrail tripwire raises by default; `guardrail_reply="..."` records it as the
+  agent's answer instead. Handoffs show up as tool calls (`transfer_to_billing`), and the next turn starts from
+  the agent that answered last (`resume_last_agent=False` always starts from `target`).
+- **Claude Agent SDK.** Session mode resumes the SDK session of the previous turn; leave `resume`,
+  `continue_conversation` and `session_id` unset in your options. `usage.cost` carries `total_cost_usd`.
+- **Google ADK.** One ADK session per scenario (`session_service`, `app_name`, `user_id` and the initial `state`
+  are options). ADK re-raises a tool's exception unless a callback turns it into a result.
+- **Pydantic AI.** A plain exception in a tool aborts the run; `ModelRetry` and failed tool returns are recorded
+  as errors.
+- **smolagents.** The real tools a `CodeAgent` calls from its code are recorded, not only the interpreter step;
+  `final_answer` is left out.
+- **DSPy.** Tool calls are visible for `dspy.ReAct`; usage needs `dspy.settings.track_usage`.
+
+Each adapter is tested against the real library with a scripted model (`just contract crewai`, or
+`just contract-all`), and CI runs those against the latest release of every framework.
 
 ## Agents behind an HTTP API
 
@@ -1041,7 +1131,8 @@ with a stricter instruction each time.
 
 ## Custom adapters
 
-`agno_adapter` covers agno agents, teams and workflows. It retries backend failures (a run that ended in
+`agno_adapter` covers agno agents, teams and workflows; the factories under Agents built with other frameworks
+cover theirs. It retries backend failures (a run that ended in
 `RunStatus.error`, a proxy's HTML error page) and raises `SimulationBackendError` when they persist, while a
 guardrail refusal (`InputCheckError`/`OutputCheckError`) counts as the agent's answer. For agents with
 `output_schema`, pass `content_fn` to render the structured reply as text.
@@ -1071,8 +1162,8 @@ call then replays the transcript as messages in a fresh session.
 
 ## Compared with LangWatch Scenario
 
-Added on top: tool trajectory matching, token usage, repeated trials with pass^k, and report comparison against
-a baseline.
+Added on top: adapters for agents built with other frameworks, tool trajectory matching, token usage, repeated
+trials with pass^k, and report comparison against a baseline.
 
 Ported: the script steps (`user`, `agent`, `message`, `proceed`, `judge` with inline criteria and
 `additional_context`, `succeed`, `fail`), per-criterion `passed`/`failed`/`inconclusive` verdicts, the two-phase
@@ -1103,6 +1194,7 @@ files are left out.
 ```bash
 uv sync
 just ci          # ruff, ty, pytest with coverage
+just contract langchain   # one framework adapter against the real library (see the justfile for the names)
 just precommit   # every prek hook
 ```
 

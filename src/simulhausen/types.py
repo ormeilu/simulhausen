@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from math import comb
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
 
 from pydantic import BaseModel, Field, field_validator
@@ -13,6 +14,8 @@ from pydantic import BaseModel, Field, field_validator
 if TYPE_CHECKING:
     from agno.models.message import MessageReferences
     from agno.models.response import ToolExecution
+
+    from simulhausen.trajectory import ArgsMatch, ExpectedCall, TrajectoryMatch, TrajectoryMode
 
 __all__ = [
     "AgentAdapter",
@@ -32,6 +35,8 @@ __all__ = [
     "ToolCall",
     "ToolCallStatus",
     "ToolCalls",
+    "TrialsResult",
+    "Usage",
 ]
 
 type Role = Literal["user", "assistant"]
@@ -53,18 +58,113 @@ class AgentRole(StrEnum):
 
 
 @dataclass
+class Usage:
+    """Model usage of the agent under test: tokens, model requests and cost.
+
+    Adapters fill it per turn from what the framework or the server reports;
+    the state and the result hold the sum over the scenario. ``cost`` stays
+    ``None`` until some turn reports one. Usages add up with ``+``.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    # Model calls behind the turn; 0 when the source does not say.
+    requests: int = 0
+    cost: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.total_tokens:
+            self.total_tokens = self.input_tokens + self.output_tokens
+
+    def __add__(self, other: Usage) -> Usage:
+        if not isinstance(other, Usage):
+            return NotImplemented
+        cost = None if self.cost is None and other.cost is None else (self.cost or 0.0) + (other.cost or 0.0)
+        return Usage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            requests=self.requests + other.requests,
+            cost=cost,
+        )
+
+    def __bool__(self) -> bool:
+        return bool(self.total_tokens or self.requests or self.cost)
+
+    @classmethod
+    def of(cls, source: object, *, requests: int | None = None) -> Usage | None:
+        """Usage read from a framework's or a server's usage object or dict; ``None`` when it holds none.
+
+        Understands the names the same three numbers go by: ``input_tokens`` /
+        ``prompt_tokens`` / ``prompt_token_count`` / ``inputTokens``,
+        ``output_tokens`` / ``completion_tokens`` / ``candidates_token_count`` /
+        ``outputTokens`` and ``total_tokens`` / ``total_token_count`` /
+        ``totalTokens``, plus ``requests`` and ``cost``. ``requests`` overrides
+        the model call count when the caller counted it itself.
+        """
+        if source is None:
+            return None
+
+        def read(*names: str) -> float | None:
+            for name in names:
+                value = source.get(name) if isinstance(source, Mapping) else getattr(source, name, None)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return value
+            return None
+
+        cost = read("cost", "total_cost_usd")
+        usage = cls(
+            input_tokens=int(
+                read("input_tokens", "prompt_tokens", "prompt_token_count", "input_token_count", "inputTokens") or 0
+            ),
+            output_tokens=int(
+                read(
+                    "output_tokens", "completion_tokens", "candidates_token_count", "output_token_count", "outputTokens"
+                )
+                or 0
+            ),
+            total_tokens=int(read("total_tokens", "total_token_count", "totalTokens") or 0),
+            requests=requests if requests is not None else int(read("requests", "successful_requests") or 0),
+            cost=float(cost) if cost is not None else None,
+        )
+        return usage if usage else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "requests": self.requests,
+            "cost": self.cost,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Usage:
+        cost = data.get("cost")
+        return cls(
+            input_tokens=int(data.get("input_tokens") or 0),
+            output_tokens=int(data.get("output_tokens") or 0),
+            total_tokens=int(data.get("total_tokens") or 0),
+            requests=int(data.get("requests") or 0),
+            cost=float(cost) if cost is not None else None,
+        )
+
+
+@dataclass
 class AgentTurn:
-    """What the agent under test produced in one turn: text, tool calls, references.
+    """What the agent under test produced in one turn: text, tool calls, references, usage.
 
     ``tools`` back assertions such as ``state.has_tool_call(...)``. ``references``
     (the RAG hits from ``RunOutput.references``) are passed on to the judge so it
-    grades the reply against the same material the agent saw. ``agno_adapter``
-    fills all three.
+    grades the reply against the same material the agent saw. ``usage`` is what
+    the turn cost in tokens and model requests. ``agno_adapter`` fills all four.
     """
 
     content: str
     tools: list[ToolExecution] | None = None
     references: list[MessageReferences] | None = None
+    usage: Usage | None = None
 
 
 # An adapter may return plain text or text with tools and references.
@@ -240,6 +340,9 @@ class ScenarioState:
     # Agent turns played so far. A rollback does not lower it: rolled-back
     # turns still count against max_turns.
     current_turn: int = 0
+    # Usage of the agent under test summed over its turns; None until an adapter
+    # reports one. A rollback does not lower it either: the tokens were spent.
+    usage: Usage | None = None
     # id() of each tool execution / reference -> index of the agent message that
     # brought it, so a rollback drops what the removed turns produced.
     _origins: dict[int, int] = field(default_factory=dict, repr=False, compare=False)
@@ -298,8 +401,11 @@ class ScenarioState:
         content: str,
         tools: list[ToolExecution] | None = None,
         references: list[MessageReferences] | None = None,
+        usage: Usage | None = None,
     ) -> None:
         self.add_message("assistant", content)
+        if usage is not None:
+            self.usage = usage if self.usage is None else self.usage + usage
         index = len(self.messages) - 1
         for item in [*(tools or []), *(references or [])]:
             self._origins[id(item)] = index
@@ -447,6 +553,27 @@ class ScenarioState:
         """Whether the tools ran in this order (a subsequence; other calls may sit between)."""
         it = iter(self.tool_call_names())
         return all(name in it for name in tool_names)
+
+    def match_trajectory(
+        self,
+        expected: Sequence[str | ExpectedCall | tuple[str, Mapping[str, Any] | None]],
+        *,
+        mode: TrajectoryMode = "in_order",
+        args: ArgsMatch = "subset",
+        include_errors: bool = False,
+    ) -> TrajectoryMatch:
+        """Compare the tool calls so far with the expected ones; see :mod:`simulhausen.trajectory`.
+
+        ``mode`` is ``"exact"``, ``"in_order"``, ``"any_order"``, ``"unordered"``
+        or ``"subset"``. The result is truthy on a match and explains a
+        mismatch::
+
+            match = state.match_trajectory(["search", sim.expect_call("refund", order_id="1042")], mode="exact")
+            assert match, match.explanation
+        """
+        from simulhausen.trajectory import match_trajectory
+
+        return match_trajectory(self.tool_calls(include_errors=include_errors), expected, mode=mode, args=args)
 
     # -- judge evidence ---------------------------------------------------
 
@@ -633,6 +760,11 @@ class ScenarioResult:
     simulator_time: float = 0.0
     # Every verdict call of the judge with its evidence, in call order.
     judge_calls: list[JudgeCall] = field(default_factory=list)
+    # Tokens, model requests and cost of the agent under test; None when the adapter reports none.
+    usage: Usage | None = None
+    # 1-based trial number and the number of trials when the scenario came from run_trials().
+    trial: int | None = None
+    trials: int | None = None
 
     @property
     def status(self) -> ScenarioStatus:
@@ -675,4 +807,111 @@ class ScenarioResult:
         if self.judge_score is not None and not self.judge_score.passed:
             parts.append(f"judge score {self.judge_score.raw_score}/10 below {self.judge_score.threshold}")
         parts.extend(f"criterion {v.status}: {v.criterion} ({v.reasoning})" for v in self.verdicts if not v.passed)
+        return "; ".join(parts)
+
+
+@dataclass
+class TrialsResult:
+    """The same scenario played several times (``run_trials``): every trial and the reliability over them.
+
+    Rates are fractions from 0 to 1 over the judged trials (PASS + FAIL). WARN
+    trials say nothing about the agent and stay out, as in every pass rate
+    here.
+    """
+
+    name: str
+    results: list[ScenarioResult] = field(default_factory=list)
+    # The exception that ended each trial early (None for a trial that ran to its end), by trial.
+    errors: list[Exception | None] = field(default_factory=list, repr=False)
+    # Share of judged trials that has to pass for ``success``.
+    min_pass_rate: float = 1.0
+
+    def _count(self, status: ScenarioStatus) -> int:
+        return sum(result.status is status for result in self.results)
+
+    @property
+    def trials(self) -> int:
+        return len(self.results)
+
+    @property
+    def passed(self) -> int:
+        return self._count(ScenarioStatus.PASS)
+
+    @property
+    def failed(self) -> int:
+        return self._count(ScenarioStatus.FAIL)
+
+    @property
+    def warned(self) -> int:
+        return self._count(ScenarioStatus.WARN)
+
+    @property
+    def judged(self) -> int:
+        """Trials that got a verdict at all (PASS + FAIL)."""
+        return self.passed + self.failed
+
+    @property
+    def pass_rate(self) -> float:
+        """PASS / (PASS + FAIL), 0 when no trial was judged."""
+        return self.passed / self.judged if self.judged else 0.0
+
+    def pass_hat(self, k: int | None = None) -> float:
+        """pass^k: the chance that ``k`` independent trials all pass, estimated from these trials.
+
+        The unbiased estimate C(passed, k) / C(judged, k) that tau-bench
+        reports; ``k`` defaults to the number of judged trials, where it is 1
+        only when every one of them passed. It falls as k grows unless the
+        agent never fails, which is what tells a reliable agent from a lucky
+        one. 0 when no trial was judged; ``k`` above the judged count raises
+        ``ValueError``.
+        """
+        if not self.judged:
+            return 0.0
+        k = self.judged if k is None else k
+        if not 1 <= k <= self.judged:
+            raise ValueError(f"k must be between 1 and the {self.judged} judged trial(s), got {k}")
+        return comb(self.passed, k) / comb(self.judged, k)
+
+    @property
+    def flaky(self) -> bool:
+        """Some trials passed and some failed: the outcome depends on the draw."""
+        return bool(self.passed and self.failed)
+
+    @property
+    def success(self) -> bool:
+        """At least one trial was judged and the pass rate reaches ``min_pass_rate``."""
+        return bool(self.judged) and self.pass_rate >= self.min_pass_rate
+
+    @property
+    def total_time(self) -> float:
+        return sum(result.total_time for result in self.results)
+
+    @property
+    def usage(self) -> Usage | None:
+        """Usage of the agent under test summed over the trials; ``None`` when no trial reported one."""
+        total: Usage | None = None
+        for result in self.results:
+            if result.usage is not None:
+                total = result.usage if total is None else total + result.usage
+        return total
+
+    def failure_summary(self) -> str:
+        """Readable explanation, for ``assert outcome.success, outcome.failure_summary()``."""
+        if self.success:
+            return ""
+        if not self.judged:
+            headline = f"scenario {self.name!r} could not be verified in any of {self.trials} trial(s)"
+        else:
+            headline = (
+                f"scenario {self.name!r} passed {self.passed} of {self.judged} judged trial(s) "
+                f"({self.pass_rate:.0%}, needs {self.min_pass_rate:.0%})"
+            )
+            if self.warned:
+                headline += f", {self.warned} not verified"
+        parts = [headline]
+        parts.extend(
+            f"trial {result.trial or index}: {result.failure_summary()}"
+            for index, result in enumerate(self.results, 1)
+            if not result.success
+        )
         return "; ".join(parts)

@@ -1624,3 +1624,185 @@ async def test_callable_returning_a_checkpoint_ends_the_scenario_after_it() -> N
     assert result.status is ScenarioStatus.PASS
     assert _verdict_pairs(result) == [("answers", "passed")]
     assert len(judge.judge_calls) == 1
+
+
+# -- usage --------------------------------------------------------------------
+
+
+async def test_usage_of_the_agent_turns_adds_up_on_the_result() -> None:
+    adapter = ReplyAdapter(
+        AgentTurn(content="a", usage=sim.Usage(input_tokens=10, output_tokens=2, requests=1)),
+        "plain reply without usage",
+        AgentTurn(content="c", usage=sim.Usage(input_tokens=5, output_tokens=1, requests=2, cost=0.01)),
+    )
+    seen: list[sim.Usage | None] = []
+
+    result = await play(
+        adapter,
+        script=[
+            sim.user("1"),
+            sim.agent(),
+            lambda state: seen.append(state.usage),
+            sim.user("2"),
+            sim.agent(),
+            sim.user("3"),
+            sim.agent(),
+        ],
+    )
+
+    assert seen == [sim.Usage(10, 2, 12, requests=1)]
+    assert result.usage == sim.Usage(15, 3, 18, requests=3, cost=0.01)
+    assert json.loads(to_json(collector.records))["usage"]["total_tokens"] == 18
+
+
+async def test_a_run_without_reported_usage_has_none() -> None:
+    result = await play(ReplyAdapter(), script=[sim.user("hi"), sim.agent()])
+
+    assert result.usage is None
+    assert (result.trial, result.trials) == (None, None)
+
+
+# -- run_trials ---------------------------------------------------------------
+
+
+async def _trials(*agents: object, **kwargs: Any) -> sim.TrialsResult:
+    return await sim.run_trials("scenario", "A user tests the agent.", list(agents), **kwargs)
+
+
+async def test_run_trials_plays_the_scenario_again_and_numbers_the_trials() -> None:
+    adapter = ReplyAdapter()
+    judge = FakeJudge(rounds=["passed", "failed", "passed"])
+
+    outcome = await _trials(adapter, judge, script=[sim.user("hi"), sim.agent()], trials=3)
+
+    assert [result.status for result in outcome.results] == [
+        ScenarioStatus.PASS,
+        ScenarioStatus.FAIL,
+        ScenarioStatus.PASS,
+    ]
+    assert [(result.trial, result.trials) for result in outcome.results] == [(1, 3), (2, 3), (3, 3)]
+    assert outcome.errors == [None, None, None]
+    assert (outcome.passed, outcome.failed, outcome.flaky, outcome.success) == (2, 1, True, False)
+    assert outcome.pass_hat(2) == pytest.approx(1 / 3)
+    assert "passed 2 of 3 judged trial(s)" in outcome.failure_summary()
+    assert len(adapter.inputs) == 3
+    assert len({agent_input.thread_id for agent_input in adapter.inputs}) == 3
+    assert [record.result.trial for record in collector.records] == [1, 2, 3]
+
+
+async def test_run_trials_takes_the_count_from_the_config() -> None:
+    assert (await _trials(ReplyAdapter(), script=[sim.user("hi"), sim.agent()])).trials == 3
+    sim.configure(trials=2)
+    assert (await _trials(ReplyAdapter(), script=[sim.user("hi"), sim.agent()])).trials == 2
+
+
+async def test_run_trials_builds_fresh_agents_and_scripts_from_factories() -> None:
+    built: list[ReplyAdapter] = []
+
+    def agents() -> list[object]:
+        built.append(ReplyAdapter(f"reply from adapter {len(built) + 1}"))
+        return [built[-1]]
+
+    def script(trial_agents: Sequence[object]) -> list[ScriptStep]:
+        assert trial_agents == [built[-1]]
+        return [sim.user(f"for adapter {len(built)}"), sim.agent()]
+
+    outcome = await sim.run_trials("scenario", "description", agents, script, trials=2)
+
+    assert [result.messages[-1]["content"] for result in outcome.results] == [
+        "reply from adapter 1",
+        "reply from adapter 2",
+    ]
+    assert [result.messages[0]["content"] for result in outcome.results] == ["for adapter 1", "for adapter 2"]
+    assert outcome.success
+
+
+async def test_run_trials_keeps_going_after_an_assertion_a_harness_failure_and_a_crash() -> None:
+    attempts: list[int] = []
+
+    def step(state: ScenarioState) -> None:
+        attempts.append(len(attempts) + 1)
+        if attempts[-1] == 1:
+            raise AssertionError("first trial trips")
+        if attempts[-1] == 2:
+            raise SimulationStructuredOutputError("no verdict")
+        if attempts[-1] == 3:
+            raise RuntimeError("boom")
+
+    outcome = await _trials(ReplyAdapter(), script=[sim.user("hi"), sim.agent(), step], trials=4, min_pass_rate=0.3)
+
+    assert [result.status for result in outcome.results] == [
+        ScenarioStatus.FAIL,
+        ScenarioStatus.WARN,
+        ScenarioStatus.FAIL,
+        ScenarioStatus.PASS,
+    ]
+    assert [type(error) for error in outcome.errors] == [
+        AssertionError,
+        SimulationStructuredOutputError,
+        RuntimeError,
+        type(None),
+    ]
+    assert outcome.results[0].failure_reason == "assertion in script: first trial trips"
+    assert outcome.results[1].harness_error
+    assert outcome.results[2].failure_reason == "runtime error: RuntimeError('boom')"
+    assert (outcome.judged, outcome.warned) == (3, 1)
+    assert outcome.success  # 1 of 3 judged reaches 30%
+
+
+async def test_run_trials_concurrency_overlaps_the_trials() -> None:
+    running = peak = 0
+
+    class Slow(AgentAdapter):
+        async def call(self, input: AgentInput) -> str:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return "ok"
+
+    script = [sim.user("hi"), sim.agent()]
+    await _trials(Slow(), script=script, trials=4)
+    assert peak == 1
+    await _trials(Slow(), script=script, trials=4, concurrency=3)
+    assert peak == 3
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"trials": 0}, "trials must be at least 1"),
+        ({"min_pass_rate": 1.5}, "min_pass_rate must be between 0 and 1"),
+        ({"concurrency": 0}, "concurrency must be at least 1"),
+        ({"max_turns": 0}, "max_turns must be at least 1"),
+    ],
+)
+async def test_run_trials_checks_its_arguments(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        await _trials(ReplyAdapter(), **kwargs)
+
+
+async def test_each_trial_has_its_own_cache_entries() -> None:
+    """With one shared key every trial would replay the first one."""
+    sim.configure(cache_key=KEY)
+    seen: list[str | None] = []
+
+    def record(state: ScenarioState) -> None:
+        context = current_context()
+        seen.append(context.cache_key if context else None)
+
+    users = [ScriptedUser(), ScriptedUser()]
+    outcome = await sim.run_trials(
+        "scenario", "description", lambda: [ReplyAdapter(), users.pop(0)], [sim.user(), sim.agent(), record], trials=2
+    )
+
+    assert seen == [f"{KEY}#trial-1", f"{KEY}#trial-2"]
+    assert outcome.success
+    replay_users = [ScriptedUser(), ScriptedUser()]
+    replayed = list(replay_users)
+    await sim.run_trials(
+        "scenario", "description", lambda: [ReplyAdapter(), replay_users.pop(0)], [sim.user(), sim.agent()], trials=2
+    )
+    # Both trials were answered from the cache: neither simulator was asked.
+    assert [len(user.transcript_sizes) for user in replayed] == [0, 0]

@@ -152,14 +152,32 @@ a failure turns the pass rate into a measure of helper-LLM reliability. `pass_ra
 the WARN count is reported next to it. Harness errors are still raised, so a plain pytest run fails on them.
 
 `ScenarioResult` carries `verdicts`, `passed_criteria`, `failed_criteria`, `inconclusive_criteria`, the judge's
-`reasoning`, `messages`, `tool_calls`, `turns` and `judge_calls`. Times are split into `total_time`, `agent_time`,
-`judge_time` (verdicts, continue/conclude decisions and the score) and `simulator_time`. Each entry of
+`reasoning`, `messages`, `tool_calls`, `turns`, `usage` and `judge_calls`. Times are split into `total_time`,
+`agent_time`, `judge_time` (verdicts, continue/conclude decisions and the score) and `simulator_time`. Each entry of
 `judge_calls` is a `JudgeCall` with the criteria, the `additional_context`, the references and tool executions the
 judge saw, `messages_count` (the judge saw `messages[:messages_count]`), the verdicts, the summary and the call's
 wall time.
 
 For an overall quality gate on top of the criteria, `JudgeAgent(criteria, score_threshold=7)` also grades the
 whole dialogue 1-10 with agno's `JudgeScorer`. Calibrate the threshold on known good and bad runs first.
+
+### Tokens and cost
+
+`result.usage` is what the agent under test spent over the scenario: `input_tokens`, `output_tokens`,
+`total_tokens`, `requests` (model calls) and `cost` when the source reports one. It is `None` when the adapter has
+nothing to read it from. `agno_adapter` and the HTTP adapters fill it from the run's
+metrics or the response's `usage`; A2A carries none. `state.usage` holds the sum so far, so a script step can put
+a budget on it:
+
+```python
+def within_budget(state: sim.ScenarioState) -> None:
+    assert state.usage is not None and state.usage.total_tokens < 20_000, state.usage
+```
+
+The reports show usage per scenario and in total. The simulator's and the judge's own tokens are not counted: the
+number is about your agent. A custom adapter reports usage with `AgentTurn(content=..., usage=sim.Usage(...))`,
+and `sim.Usage.of(obj)` reads the usual field names (`prompt_tokens`, `input_tokens`, `prompt_token_count` and
+so on) from an object or a dict.
 
 ### Long dialogues
 
@@ -215,6 +233,34 @@ def no_second_login_form(state: sim.ScenarioState) -> None:
 ```
 
 `state.turn_of(execution)` gives the turn of any tool execution or reference of the state, failed ones included.
+
+### Trajectories
+
+`state.match_trajectory(expected, mode=...)` compares the whole sequence of calls with the one you expect and
+explains a mismatch:
+
+```python
+match = state.match_trajectory(
+    ["search_orders", sim.expect_call("issue_refund", order_id="1042")],
+    mode="exact",
+)
+assert match, match.explanation
+# tool trajectory does not match (mode 'exact'); missing: issue_refund(order_id='1042'); unexpected: ...
+```
+
+| `mode` | Matches when |
+|---|---|
+| `"exact"` | the same calls in the same order, nothing else |
+| `"in_order"` (default) | the expected calls happened in this order; other calls may sit between them |
+| `"any_order"` | every expected call happened, in any order; other calls are allowed |
+| `"unordered"` | the same calls in any order, nothing else |
+| `"subset"` | the agent called nothing outside the expected calls (an allow-list; repeats are fine) |
+
+An expected call is a tool name, `sim.expect_call(name, **args)` or a `(name, args)` pair. Arguments match as a
+subset by default: the call may carry more than you listed. `args="exact"` wants the same argument names,
+`args="ignore"` compares names only. An argument value is compared with `==`; a compiled regular expression is
+searched in a string value, and a callable is a predicate (`sim.expect_call("refund", amount=lambda a: a <= 100)`).
+`include_errors=True` lets failed and paused calls take part.
 
 The judge sees the same evidence: the transcript, the RAG references the agent retrieved (with source URLs) and
 a capped summary of tool executions, errors included. Each block is fenced with a random per-call tag and the
@@ -318,7 +364,58 @@ pairs; every extra turn costs money and adds variance.
 
 Do not paper over a reproducible failure with reruns. Look at `failure_summary()`, the tool evidence and the
 transcript in the JSON report first: they tell an agent bug from a broken backend, a wrong assertion or a vague
-criterion.
+criterion. Repeating a scenario to measure how often it passes is a different thing; see Reliability below.
+
+## Reliability: repeated trials
+
+An agent that passes a scenario once may fail it the next time on the same input. `run_trials` plays the scenario
+several times and reports how reliably it passes:
+
+```python
+def make_agents() -> list[object]:
+    return [
+        sim.agno_adapter(_support_agent),
+        sim.UserSimulatorAgent(),
+        sim.JudgeAgent(criteria=["The agent looks the order up before promising anything"]),
+    ]
+
+
+outcome = await sim.run_trials(
+    name="refund: duplicated charge",
+    description="The user was charged twice for order 1042 and wants the extra charge refunded.",
+    agents=make_agents,
+    trials=5,
+    min_pass_rate=0.8,
+)
+assert outcome.success, outcome.failure_summary()
+```
+
+The `TrialsResult` has every trial's `ScenarioResult` in `results` and these numbers over the judged trials
+(PASS + FAIL; WARN stays out, as in every pass rate here):
+
+- `pass_rate`, from 0 to 1, and `passed`, `failed`, `warned`, `judged`;
+- `pass_hat(k)`: the chance that k trials in a row all pass, the pass^k of
+  [τ-bench](https://arxiv.org/abs/2406.12045), estimated as C(passed, k) / C(judged, k). With `k` left out it is
+  taken over all judged trials. It falls as k grows unless the agent never fails, which is what tells a reliable
+  agent from a lucky one: 4 passes out of 5 give a pass rate of 0.8 and a pass^3 of 0.4;
+- `flaky`: some trials passed and some failed;
+- `success`: at least one trial was judged and `pass_rate >= min_pass_rate` (default 1.0);
+- `usage` and `total_time` summed over the trials.
+
+A failed trial raises nothing. A script assertion, a harness failure or a runtime error ends that trial, is
+recorded on its result (the exception itself is in `outcome.errors`), and the next trial starts, so assert on
+`outcome.success`.
+
+`agents` is the usual list or a zero-argument factory called once per trial. Use the factory for anything that
+keeps state between calls, such as a `RedTeamAgent` or an adapter around a stateful agent object. `script` may be
+a function of the trial's agents for the same reason (`lambda agents: agents[1].marathon_script()`). `trials`
+falls back to `configure(trials=...)` and `--sim-trials N`, which start at 3. `concurrency=4` plays four trials
+at a time; keep it at 1 when the agent or its clients are process-wide singletons. With a cache key every trial
+has its own entries, so a rerun replays each trial as it went.
+
+Each trial is a scenario of its own in the reports (`refund: duplicated charge (trial 2/5)`), and the markdown,
+console and JSON reports add a reliability table: trials, PASS, FAIL, WARN, pass rate and pass^k per scenario,
+with flaky scenarios marked.
 
 ## Red teaming
 
@@ -439,9 +536,10 @@ uv run pytest -m simulation --sim-benchmark \
 uv run pytest -m simulation --sim-report reports/simulations.json \
   --sim-report-evidence                        # JSON with each judge call's evidence
 uv run pytest -m simulation -k refund -s --sim-debug  # you type the user's messages
+uv run pytest -m simulation --sim-trials 5     # run_trials() plays each scenario 5 times
 ```
 
-The JSON report keeps transcripts, verdicts and the names of the tools that ran. `--sim-report-evidence` adds
+The JSON report keeps transcripts, verdicts, the names of the tools that ran and the agent's usage. `--sim-report-evidence` adds
 every judge call with what the judge ruled on: criteria, additional context, RAG references, tool arguments and
 results. It is opt-in because references make the file much bigger and may hold data you do not want in CI
 artifacts. With the evidence in the report, a verdict can be replayed, for example to compare judge models or
@@ -476,6 +574,37 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.get_closest_marker("simulation"):
             item.add_marker(pytest.mark.asyncio(loop_scope="session"), append=False)
+```
+
+### Comparing with a baseline
+
+A pass rate of 88% says little until you know it was 93% before your change. `simulhausen report diff` compares
+two JSON reports:
+
+```bash
+simulhausen report diff reports/main.json reports/pr.json --md reports/diff.md --fail-on-regression
+```
+
+```text
+pass rate 93% -> 88%; 2 regressed, 1 improved, 1 new, 171 unchanged
+  regressed: refund: asks for the order number: PASS → FAIL
+  regressed: booking: no double charge: 5/5 passed → 3/5 passed
+```
+
+Scenarios are matched by test id and name. A scenario is `regressed` or `improved` when its pass rate moved,
+`new` or `removed` when only one report has it, `unverified` when this run has no verdict for it (every trial
+WARN) and `verified` when the baseline had none. Scenarios played with `run_trials` are compared by their pass
+rate over the judged trials, and `--tolerance 0.2` lets one trial out of five go the other way without counting.
+The markdown (`--md`) lists the regressions first, each with the criteria that failed and the failure reason,
+then the pass rate, time and agent tokens of both runs; it starts with a hidden `<!-- simulhausen-diff -->`
+marker. `--json` writes the same comparison as data. The command exits 0, or 3 with `--fail-on-regression` when
+something regressed, and 1 when a file is not a report. From Python: `simulhausen.diff.diff_reports(base, head)`.
+
+On GitHub Actions, keep the report of the default branch as an artifact or in a cache and compare against it:
+
+```yaml
+- run: uv run pytest -m simulation --sim-benchmark --sim-report reports/pr.json
+- run: uv run simulhausen report diff reports/main.json reports/pr.json --md reports/diff.md --fail-on-regression
 ```
 
 ### Reports in pull requests
@@ -893,6 +1022,7 @@ sim.configure(
     max_turns=10,          # ceiling for proceed() and unscripted runs
     min_turns=1,           # the judge may not end the dialogue earlier
     cache_key=None,        # set to replay simulator, judge and @sim.cache() answers from disk
+    trials=3,              # how many times run_trials() plays a scenario when it is not told
     verbose=True,          # log every message and verdict (logger "simulhausen")
     debug=False,           # ask for the user's messages on stdin
     user_name="User",      # labels in reports
@@ -940,6 +1070,9 @@ own session history, so for the rollback to reach the agent use `agno_adapter(..
 call then replays the transcript as messages in a fresh session.
 
 ## Compared with LangWatch Scenario
+
+Added on top: tool trajectory matching, token usage, repeated trials with pass^k, and report comparison against
+a baseline.
 
 Ported: the script steps (`user`, `agent`, `message`, `proceed`, `judge` with inline criteria and
 `additional_context`, `succeed`, `fail`), per-criterion `passed`/`failed`/`inconclusive` verdicts, the two-phase

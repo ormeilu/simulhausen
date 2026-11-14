@@ -60,7 +60,7 @@ from simulhausen.adapters import (
     _looks_like_error_page,
 )
 from simulhausen.exceptions import SimulationBackendError
-from simulhausen.types import AgentAdapter, AgentTurn
+from simulhausen.types import AgentAdapter, AgentTurn, Usage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Iterator, Sequence
@@ -479,6 +479,8 @@ class _AgentOSRun:
     references: list[MessageReferences] = field(default_factory=list)
     # A guardrail refused the request: ``content`` is the refusal, the agent's answer.
     refusal: bool = False
+    # The top-level run's ``metrics`` (tokens, cost), when the server sent them.
+    metrics: Any = None
 
 
 def _tool_executions(raw: Any) -> list[ToolExecution]:
@@ -513,7 +515,10 @@ def _parse_agentos_json(body: dict[str, Any]) -> _AgentOSRun:
         # stream tells them apart, hence stream=True by default.
         raise _TransientError(f"AgentOS run ended with status {status}: {_excerpt(_to_text(body.get('content')))}")
     return _AgentOSRun(
-        content=body.get("content"), tools=_run_tools(body), references=_references(body.get("references"))
+        content=body.get("content"),
+        tools=_run_tools(body),
+        references=_references(body.get("references")),
+        metrics=body.get("metrics"),
     )
 
 
@@ -564,6 +569,7 @@ def _parse_agentos_stream(text: str, names: _AgentOSEvents) -> _AgentOSRun:
                 content="".join(deltas) if content is None else content,
                 tools=tools + extra,
                 references=_references(data.get("references")),
+                metrics=data.get("metrics"),
             )
     raise _TransientError(f"the AgentOS event stream ended without {names.completed}")
 
@@ -617,7 +623,12 @@ class _AgentOSAdapter(_HttpAdapter):
             content = self._content_fn(run.content) if self._content_fn is not None else _to_text(run.content)
             if _looks_like_error_page(content):
                 raise _TransientError(f"backend returned a gateway HTML error page: {_excerpt(content)[:120]}")
-        return AgentTurn(content=content, tools=run.tools or None, references=run.references or None)
+        return AgentTurn(
+            content=content,
+            tools=run.tools or None,
+            references=run.references or None,
+            usage=Usage.of(run.metrics),
+        )
 
 
 def _form_value(value: Any) -> str:
@@ -779,7 +790,11 @@ class _OpenAIChatAdapter(_HttpAdapter):
         if not isinstance(message, dict):
             raise _TransientError(f"chat completion without a message: {_excerpt(response.text)}")
         content = _blocks_text(message.get("content")) or _to_text(message.get("refusal"))
-        return AgentTurn(content=content, tools=_requested_tools(message.get("tool_calls")) or None)
+        return AgentTurn(
+            content=content,
+            tools=_requested_tools(message.get("tool_calls")) or None,
+            usage=Usage.of(body.get("usage"), requests=1),
+        )
 
 
 def openai_chat_adapter(
@@ -921,7 +936,9 @@ def _parse_responses(response: httpx.Response) -> tuple[AgentTurn, str | None]:
             raise _TransientError(f"response incomplete ({reason}) without any text")
         logger.warning("response incomplete (%s): using the partial reply", reason)
     response_id = body.get("id")
-    turn = AgentTurn(content=content, tools=_responses_tools(output) or None)
+    turn = AgentTurn(
+        content=content, tools=_responses_tools(output) or None, usage=Usage.of(body.get("usage"), requests=1)
+    )
     return turn, response_id if isinstance(response_id, str) and response_id else None
 
 
@@ -1297,6 +1314,16 @@ def _langgraph_tools(messages: list[dict[str, Any]]) -> list[ToolExecution]:
     return tools
 
 
+def _langgraph_usage(replies: list[dict[str, Any]]) -> Usage | None:
+    """``usage_metadata`` summed over the AI messages of the run; one model request per message that has it."""
+    total: Usage | None = None
+    for reply in replies:
+        usage = Usage.of(reply.get("usage_metadata"), requests=1)
+        if usage is not None:
+            total = usage if total is None else total + usage
+    return total
+
+
 class _LangGraphAdapter(_HttpAdapter):
     # 409: the thread is still busy with a previous run (multitask_strategy=reject).
     _retry_statuses = frozenset({408, 409, 429})
@@ -1355,7 +1382,7 @@ class _LangGraphAdapter(_HttpAdapter):
         produced = self._produced(messages, sent_ids)
         replies = [m for m in produced if _langgraph_kind(m) in _LANGGRAPH_AI]
         content = _blocks_text(replies[-1].get("content")) if replies else ""
-        return AgentTurn(content=content, tools=_langgraph_tools(produced) or None)
+        return AgentTurn(content=content, tools=_langgraph_tools(produced) or None, usage=_langgraph_usage(replies))
 
     @staticmethod
     def _produced(messages: list[dict[str, Any]], sent_ids: set[str]) -> list[dict[str, Any]]:

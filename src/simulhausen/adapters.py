@@ -1,7 +1,7 @@
 """Ready-made adapters: agno Agent/Team/Workflow, and plain functions.
 
 ``agno_adapter`` builds the usual adapter (``arun`` in one session, an
-``AgentTurn`` with content, tools and references) in one call, so tests do not
+``AgentTurn`` with content, tools, references and usage) in one call, so tests do not
 need a wrapper class each. ``function_adapter`` wraps any sync or async
 callable. Subclass :class:`~simulhausen.types.AgentAdapter` for anything else.
 """
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from agno.models.message import Message as AgnoMessage
 
 from simulhausen.exceptions import SimulationBackendError
-from simulhausen.types import AgentAdapter, AgentInput, AgentReturnTypes, AgentTurn
+from simulhausen.types import AgentAdapter, AgentInput, AgentReturnTypes, AgentTurn, Usage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -175,6 +175,7 @@ class _AgnoAdapter(AgentAdapter):
             content=content,
             tools=_collect_tools(response),
             references=getattr(response, "references", None),
+            usage=Usage.of(getattr(response, "metrics", None)),
         )
 
 

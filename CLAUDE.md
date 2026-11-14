@@ -35,7 +35,12 @@ grades the dialogue per criterion. API modelled on LangWatch Scenario; user-faci
   PASS / (PASS + FAIL). `reporting.py` and the README describe the same rules, so a change touches all three.
   The Harbor rewards in `harbor/judge.py` follow them too (PASS 1, FAIL 0, WARN no `reward.json` by default).
 - `has_tool_call` and friends count only clean executions (no error, not paused), matching agno's
-  `ToolCallScorer`. `tool_calls(include_errors=True)` is the opt-in exception.
+  `ToolCallScorer`. `tool_calls(include_errors=True)` and `match_trajectory(include_errors=True)` are the
+  opt-in exceptions.
+- Pass rates leave WARN out everywhere: `SummaryStats.pass_rate`, `TrialsResult` (`run_trials`), `diff.py` and the
+  Harbor metric.
+- A new field on `ScenarioResult` goes through `serialize_records`/`deserialize_records` in `reporting.py` (the
+  xdist hop and the JSON report), and `diff.py` reads that JSON.
 - Prompt text in `prompts.py` goes to the model verbatim (hence its E501 exemption). A wording change is a
   behaviour change: commit it as `feat:` or `fix:` so it reaches the changelog.
 - Untrusted data (transcript, RAG references, tool results, additional context) reaches the judge only through

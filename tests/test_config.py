@@ -113,3 +113,12 @@ def test_resolve_parser_model_never_raises() -> None:
 def test_public_api_names_resolve() -> None:
     assert all(hasattr(sim, name) for name in sim.__all__)
     assert sim.__version__
+
+
+def test_configure_trials() -> None:
+    assert get_config().trials == 3
+    configure(trials=5)
+    assert get_config().trials == 5
+    with pytest.raises(ValueError, match="trials must be at least 1"):
+        configure(trials=0)
+    assert get_config().trials == 5

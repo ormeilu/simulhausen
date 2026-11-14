@@ -1660,3 +1660,67 @@ async def test_run_marks_an_unreachable_agent_as_warn() -> None:
     (record,) = sim.collector.records
     assert record.result.status is ScenarioStatus.WARN
     assert record.result.harness_error
+
+
+# -- usage ------------------------------------------------------------------------------
+
+
+async def test_chat_usage() -> None:
+    body = {
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+    }
+
+    turn = await _turn(_chat(Server(httpx.Response(200, json=body))))
+
+    assert turn.usage == sim.Usage(12, 3, 15, requests=1)
+
+
+async def test_responses_usage() -> None:
+    server = Server(_response(usage={"input_tokens": 20, "output_tokens": 4, "total_tokens": 24}))
+
+    turn = await _turn(_responses(server))
+
+    assert turn.usage == sim.Usage(20, 4, 24, requests=1)
+
+
+async def test_agentos_usage_from_the_run_metrics() -> None:
+    metrics = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120, "cost": 0.002}
+    plain = Server(httpx.Response(200, json={"content": "ok", "metrics": metrics}))
+    streamed = Server(
+        _sse_response(
+            _sse({"event": "RunStarted", "run_id": "r1"}, {"event": "RunCompleted", "run_id": "r1", "content": "ok"})
+        )
+    )
+
+    assert (await _turn(_agentos(plain, stream=False))).usage == sim.Usage(100, 20, 120, cost=0.002)
+    # Timing-only metrics (and none at all) are not usage.
+    assert (await _turn(_agentos(Server(_sse_response(_fixture_sse("run_stream")))))).usage is None
+    assert (await _turn(_agentos(streamed))).usage is None
+
+
+async def test_agentos_stream_usage() -> None:
+    completed = {"event": "RunCompleted", "run_id": "r1", "content": "ok", "metrics": {"input_tokens": 7}}
+    server = Server(_sse_response(_sse({"event": "RunStarted", "run_id": "r1"}, completed)))
+
+    assert (await _turn(_agentos(server))).usage == sim.Usage(input_tokens=7)
+
+
+async def test_langgraph_usage_sums_the_ai_messages_of_the_run() -> None:
+    server = Server(
+        _state_reply(
+            {
+                "type": "ai",
+                "content": "",
+                "tool_calls": [{"id": "c1", "name": "lookup", "args": {}}],
+                "usage_metadata": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            },
+            {"type": "tool", "tool_call_id": "c1", "content": "found"},
+            {"type": "ai", "content": "done", "usage_metadata": {"input_tokens": 15, "output_tokens": 3}},
+            {"type": "ai", "content": "no usage here"},
+        )
+    )
+
+    turn = await _turn(_graph(server), _input("hi", thread_id=THREAD))
+
+    assert turn.usage == sim.Usage(25, 5, 30, requests=2)

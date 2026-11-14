@@ -1,13 +1,15 @@
 """The ``simulhausen`` command line (also ``python -m simulhausen``).
 
-So far it holds one command group, ``simulhausen harbor``, which runs scenarios inside
-Harbor task containers (see :mod:`simulhausen.harbor`). The exit codes tell apart what
-Harbor and the Harbor agents need to know:
+Two command groups. ``simulhausen report diff`` compares two JSON reports (see
+:mod:`simulhausen.diff`). ``simulhausen harbor`` runs scenarios inside Harbor task
+containers (see :mod:`simulhausen.harbor`). The exit codes tell apart what Harbor, the
+Harbor agents and a CI job need to know:
 
 * 0: done; for ``judge`` and ``run``, a reward was written;
-* 1: a usage or configuration error, nothing was played or graded;
+* 1: a usage or configuration error, nothing was played, graded or compared;
 * 2: the scenario could not be verified: ``play`` hit a harness failure (the transcript
-  is still written), or ``judge``/``run`` came to WARN and wrote no reward.
+  is still written), or ``judge``/``run`` came to WARN and wrote no reward;
+* 3: ``report diff --fail-on-regression`` found a regression.
 
 An error of the agent under test is not a harness failure: ``play`` exits 0 and the judge
 grades it FAIL. Harbor records a failed agent phase as an errored trial and retries those
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn
 
 from simulhausen import __version__
+from simulhausen.diff import diff_reports, load_report
 from simulhausen.harbor.errors import ConfigError
 from simulhausen.harbor.export import DEFAULT_ENV, DEFAULT_ORG, DEFAULT_PIP, EXPORT_MODES, ExportOptions, export_tasks
 from simulhausen.harbor.judge import (
@@ -53,11 +56,12 @@ if TYPE_CHECKING:
     from simulhausen.harbor.spec import ScenarioSpec
     from simulhausen.harbor.transcript import Transcript
 
-__all__ = ["EXIT_OK", "EXIT_UNVERIFIED", "EXIT_USAGE", "build_parser", "main"]
+__all__ = ["EXIT_OK", "EXIT_REGRESSION", "EXIT_UNVERIFIED", "EXIT_USAGE", "build_parser", "main"]
 
 EXIT_OK: Final = 0
 EXIT_USAGE: Final = 1
 EXIT_UNVERIFIED: Final = 2
+EXIT_REGRESSION: Final = 3
 
 
 class _Parser(argparse.ArgumentParser):
@@ -188,6 +192,25 @@ _HARBOR_AGENTS: Final = {
 }
 
 
+def _cmd_report_diff(args: argparse.Namespace) -> int:
+    try:
+        diff = diff_reports(load_report(args.base), load_report(args.head), tolerance=args.tolerance)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    outputs = (
+        (args.md, diff.to_markdown),
+        (args.json, lambda: json.dumps(diff.to_dict(), ensure_ascii=False, indent=2)),
+    )
+    for path, render in outputs:
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render(), encoding="utf-8")
+    print(diff.summary())
+    for delta in diff.regressions:
+        print(f"  regressed: {delta.name}: {delta.change}")
+    return EXIT_REGRESSION if args.fail_on_regression and diff.has_regressions else EXIT_OK
+
+
 def _harbor_agent_hint(task_dirs: list[Path]) -> str:
     """The Harbor agent for agent-mode tasks, picked by the target type their scenarios name."""
     kinds = {(load_scenarios(task / "environment" / "scenario.json")[0].target or {}).get("type") for task in task_dirs}
@@ -224,9 +247,31 @@ def _reward_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="simulhausen", description="simulhausen: simulation testing for agno agents.")
+    parser = _Parser(prog="simulhausen", description="simulhausen: simulation testing for AI agents.")
     parser.add_argument("--version", action="version", version=f"simulhausen {__version__}")
     commands = parser.add_subparsers(metavar="COMMAND", required=True)
+    report = commands.add_parser("report", help="work with JSON reports", description="Work with --sim-report files.")
+    report_commands = report.add_subparsers(metavar="COMMAND", required=True)
+    diff_parser = report_commands.add_parser(
+        "diff",
+        help="compare a run with a baseline run",
+        description="Compare two --sim-report JSON files: which scenarios regressed, improved, appeared or went away.",
+    )
+    diff_parser.add_argument("base", type=Path, metavar="BASE", help="the report to measure against (e.g. main)")
+    diff_parser.add_argument("head", type=Path, metavar="HEAD", help="the report of this run")
+    diff_parser.add_argument("--md", type=Path, metavar="PATH", help="write the markdown comparison to PATH")
+    diff_parser.add_argument("--json", type=Path, metavar="PATH", help="write the comparison as JSON to PATH")
+    diff_parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.0,
+        metavar="FRACTION",
+        help="how far a scenario's pass rate (0-1) may move before it counts (default: %(default)s)",
+    )
+    diff_parser.add_argument(
+        "--fail-on-regression", action="store_true", help=f"exit {EXIT_REGRESSION} when a scenario regressed"
+    )
+    diff_parser.set_defaults(handler=_cmd_report_diff)
     harbor = commands.add_parser(
         "harbor",
         help="run scenarios as Harbor tasks",

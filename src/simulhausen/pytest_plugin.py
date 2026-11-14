@@ -68,6 +68,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="write the markdown scenario report (for a PR/MR comment) to PATH",
     )
     group.addoption(
+        "--sim-trials",
+        type=int,
+        default=None,
+        metavar="N",
+        help="how many times run_trials() plays a scenario when the test does not say (default: 3)",
+    )
+    group.addoption(
         "--sim-debug",
         action="store_true",
         default=False,
@@ -83,6 +90,10 @@ def pytest_configure(config: pytest.Config) -> None:
         if config.getoption("capture") != "no":
             raise pytest.UsageError("--sim-debug reads your messages from stdin: run it with -s")
         configure(debug=True)
+    if (trials := config.getoption("--sim-trials")) is not None:
+        if trials < 1:
+            raise pytest.UsageError("--sim-trials must be at least 1")
+        configure(trials=trials)
 
 
 @pytest.hookimpl(wrapper=True)

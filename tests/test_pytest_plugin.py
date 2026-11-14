@@ -157,6 +157,7 @@ def test_options_are_listed_in_help(pytester: pytest.Pytester) -> None:
             "*--sim-report=PATH*",
             "*--sim-report-evidence*",
             "*--sim-report-md=PATH*",
+            "*--sim-trials=N*",
             "*--sim-debug*",
         ]
     )
@@ -382,3 +383,18 @@ def test_options_default_to_off(pytester: pytest.Pytester) -> None:
     assert config.getoption("--sim-debug") is False
     assert config.getoption("--sim-report") is None
     assert config.getoption("--sim-report-md") is None
+    assert config.getoption("--sim-trials") is None
+
+
+def test_sim_trials_sets_the_default_for_run_trials(pytester: pytest.Pytester) -> None:
+    pytester.makeini(INI)
+    pytester.parseconfigure("--sim-trials", "7")
+
+    assert sim.get_config().trials == 7
+
+
+def test_sim_trials_below_one_is_a_usage_error(pytester: pytest.Pytester) -> None:
+    pytester.makeini(INI)
+
+    with pytest.raises(pytest.UsageError, match="--sim-trials must be at least 1"):
+        pytester.parseconfigure("--sim-trials", "0")

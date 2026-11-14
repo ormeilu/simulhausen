@@ -633,3 +633,107 @@ def test_an_execution_without_a_name_is_never_a_call() -> None:
     state.tool_executions = [ToolExecution(tool_name=None, tool_call_error=True)]
 
     assert state.tool_calls(include_errors=True) == []
+
+
+# -- usage --------------------------------------------------------------------
+
+
+def test_usage_adds_up_and_fills_the_total() -> None:
+    first = sim.Usage(input_tokens=10, output_tokens=5, requests=1)
+    second = sim.Usage(input_tokens=1, output_tokens=2, total_tokens=4, requests=2, cost=0.5)
+
+    assert first.total_tokens == 15
+    assert first + second == sim.Usage(11, 7, 19, requests=3, cost=0.5)
+    assert (second + sim.Usage(cost=0.25)).cost == 0.75
+    assert (first + first).cost is None
+    assert first.__add__(3) is NotImplemented  # ty: ignore[invalid-argument-type]
+    assert not sim.Usage()
+    assert sim.Usage(requests=1)
+    assert sim.Usage.from_dict(second.to_dict()) == second
+    assert sim.Usage.from_dict({}) == sim.Usage()
+
+
+def test_usage_of_reads_objects_mappings_and_costs() -> None:
+    assert sim.Usage.of(None) is None
+    assert sim.Usage.of({"nothing": 1}) is None
+    assert sim.Usage.of({"prompt_tokens": 2, "completion_tokens": 3}, requests=1) == sim.Usage(2, 3, 5, requests=1)
+    assert sim.Usage.of({"total_cost_usd": 0.1}) == sim.Usage(cost=0.1)
+
+
+def test_the_state_sums_usage_over_agent_turns_and_keeps_it_through_a_rollback() -> None:
+    state = _state()
+    assert state.usage is None
+    state.add_user_message("one")
+    state.add_agent_message("a", usage=sim.Usage(input_tokens=3, output_tokens=1))
+    state.add_user_message("two")
+    state.add_agent_message("b")
+    state.add_agent_message("c", usage=sim.Usage(input_tokens=1, output_tokens=1, requests=1))
+
+    assert state.usage == sim.Usage(4, 2, 6, requests=1)
+    state.rollback_messages_to(0)
+    assert state.usage == sim.Usage(4, 2, 6, requests=1)
+
+
+# -- trials -------------------------------------------------------------------
+
+
+def _trial(status: str, trial: int | None = None) -> ScenarioResult:
+    verdict = CriterionVerdict(criterion="c", reasoning="r", status="inconclusive" if status == "warn" else "failed")
+    return ScenarioResult(
+        name="s",
+        description="d",
+        success=status == "pass",
+        verdicts=[] if status == "pass" else [verdict],
+        total_time=1.5,
+        trial=trial,
+    )
+
+
+def test_trials_result_counts_and_rates() -> None:
+    outcome = sim.TrialsResult(name="s", results=[_trial("pass"), _trial("pass"), _trial("fail"), _trial("warn")])
+
+    assert (outcome.trials, outcome.passed, outcome.failed, outcome.warned, outcome.judged) == (4, 2, 1, 1, 3)
+    assert outcome.pass_rate == pytest.approx(2 / 3)
+    assert outcome.flaky
+    assert not outcome.success
+    assert outcome.total_time == 6.0
+    assert outcome.usage is None
+    # C(2, k) / C(3, k)
+    assert outcome.pass_hat(1) == pytest.approx(2 / 3)
+    assert outcome.pass_hat(2) == pytest.approx(1 / 3)
+    assert outcome.pass_hat() == 0.0
+    with pytest.raises(ValueError, match="k must be between 1 and the 3 judged"):
+        outcome.pass_hat(4)
+
+
+def test_trials_result_min_pass_rate_and_usage() -> None:
+    results = [_trial("pass"), _trial("fail")]
+    results[0].usage = sim.Usage(1, 1)
+    results[1].usage = sim.Usage(2, 2)
+    outcome = sim.TrialsResult(name="s", results=results, min_pass_rate=0.5)
+
+    assert outcome.success
+    assert outcome.failure_summary() == ""
+    assert outcome.usage == sim.Usage(3, 3)
+    assert sim.TrialsResult(name="s", results=[_trial("pass")] * 3).pass_hat() == 1.0
+
+
+def test_trials_result_without_a_judged_trial_is_not_a_success() -> None:
+    outcome = sim.TrialsResult(name="s", results=[_trial("warn"), _trial("warn")], min_pass_rate=0.0)
+
+    assert not outcome.success
+    assert not outcome.flaky
+    assert outcome.pass_rate == 0.0
+    assert outcome.pass_hat() == 0.0
+    assert outcome.failure_summary().startswith("scenario 's' could not be verified in any of 2 trial(s)")
+
+
+def test_trials_failure_summary_names_the_failed_trials() -> None:
+    outcome = sim.TrialsResult(name="s", results=[_trial("pass", 1), _trial("fail", 2), _trial("warn")])
+
+    summary = outcome.failure_summary()
+
+    assert summary.startswith("scenario 's' passed 1 of 2 judged trial(s) (50%, needs 100%), 1 not verified")
+    assert "trial 2: scenario 's' failed" in summary
+    assert "trial 3: scenario 's' could not be verified" in summary
+    assert "trial 1:" not in summary

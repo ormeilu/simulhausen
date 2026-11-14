@@ -42,8 +42,9 @@ from simulhausen.http_adapters import (
 )
 from simulhausen.red_team import CrescendoStrategy, GoatStrategy, RedTeamAgent, RedTeamStrategy
 from simulhausen.reporting import collector
-from simulhausen.runner import run
+from simulhausen.runner import run, run_trials
 from simulhausen.script import agent, fail, judge, message, proceed, succeed, user
+from simulhausen.trajectory import ExpectedCall, TrajectoryMatch, expect_call, match_trajectory
 from simulhausen.types import (
     AgentAdapter,
     AgentInput,
@@ -62,6 +63,8 @@ from simulhausen.types import (
     ToolCall,
     ToolCalls,
     ToolCallStatus,
+    TrialsResult,
+    Usage,
 )
 
 try:
@@ -79,6 +82,7 @@ __all__ = [
     "CrescendoStrategy",
     "CriterionStatus",
     "CriterionVerdict",
+    "ExpectedCall",
     "GoatStrategy",
     "JudgeAgent",
     "JudgeCall",
@@ -98,6 +102,9 @@ __all__ = [
     "ToolCall",
     "ToolCallStatus",
     "ToolCalls",
+    "TrajectoryMatch",
+    "TrialsResult",
+    "Usage",
     "UserSimulatorAgent",
     "UserTurn",
     "__version__",
@@ -109,16 +116,19 @@ __all__ = [
     "clear_cache",
     "collector",
     "configure",
+    "expect_call",
     "fail",
     "function_adapter",
     "get_config",
     "judge",
     "langgraph_adapter",
+    "match_trajectory",
     "message",
     "openai_chat_adapter",
     "openai_responses_adapter",
     "proceed",
     "run",
+    "run_trials",
     "succeed",
     "user",
 ]

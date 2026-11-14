@@ -7,7 +7,7 @@ import inspect
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from simulhausen._cache import cached_acall, caching_context, scenario_context
 from simulhausen.agents import JudgeAgent, UserSimulatorAgent, UserTurn
@@ -24,7 +24,15 @@ from simulhausen.script import (
     UserStep,
     proceed,
 )
-from simulhausen.types import AgentAdapter, AgentInput, AgentTurn, JudgeCall, ScenarioResult, ScenarioState
+from simulhausen.types import (
+    AgentAdapter,
+    AgentInput,
+    AgentTurn,
+    JudgeCall,
+    ScenarioResult,
+    ScenarioState,
+    TrialsResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -33,7 +41,7 @@ if TYPE_CHECKING:
     from simulhausen.script import ScriptStep, StateCallback
     from simulhausen.types import CriterionVerdict, JudgeScore
 
-__all__ = ["run"]
+__all__ = ["run", "run_trials"]
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +181,7 @@ class _Simulation:
             finally:
                 self.agent_time += time.perf_counter() - started
             turn = response if isinstance(response, AgentTurn) else AgentTurn(content=str(response or ""))
-        self.state.add_agent_message(turn.content, tools=turn.tools, references=turn.references)
+        self.state.add_agent_message(turn.content, tools=turn.tools, references=turn.references, usage=turn.usage)
         self.state.current_turn += 1
         self.state._agent_seen = len(self.state.messages)
         self._log("agent", turn.content)
@@ -384,6 +392,7 @@ class _Simulation:
             judge_time=self.judge_time,
             simulator_time=self.simulator_time,
             judge_calls=list(self.judge_calls),
+            usage=self.state.usage,
         )
 
 
@@ -417,12 +426,47 @@ async def run(
     decorated with :func:`simulhausen.cache`, are replayed from disk when the same
     call was seen before. Change the key to start from scratch.
     """
+    result, error = await _play(
+        name,
+        description,
+        agents,
+        script,
+        max_turns=max_turns,
+        min_turns=min_turns,
+        verbose=verbose,
+        debug=debug,
+        cache_key=cache_key,
+    )
+    if error is not None:
+        raise error
+    return result
+
+
+async def _play(
+    name: str,
+    description: str,
+    agents: Sequence[object],
+    script: Sequence[ScriptStep] | None,
+    *,
+    max_turns: int | None,
+    min_turns: int | None,
+    verbose: bool | None,
+    debug: bool | None,
+    cache_key: str | None,
+    trial: int | None = None,
+    trials: int | None = None,
+) -> tuple[ScenarioResult, Exception | None]:
+    """Play one scenario; the result always comes back, next to the error that ended the run early."""
     for label, value in (("max_turns", max_turns), ("min_turns", min_turns)):
         if value is not None and value < 1:
             raise ValueError(f"{label} must be at least 1, got {value}")
     if cache_key is not None:
         check_cache_key(cache_key)
     config = get_config()
+    effective_key = config.cache_key if cache_key is None else cache_key
+    if effective_key is not None and trial is not None:
+        # Each trial is its own draw: sharing a key would replay trial 1 into the others.
+        effective_key = f"{effective_key}#trial-{trial}"
     simulation = _Simulation(
         name=name,
         description=description,
@@ -436,25 +480,104 @@ async def run(
 
     def finish(**kwargs: Any) -> ScenarioResult:
         result = simulation.result(total_time=time.perf_counter() - started, **kwargs)
+        result.trial, result.trials = trial, trials
         collector.add(result)
         return result
 
     try:
-        with scenario_context(name, description, config.cache_key if cache_key is None else cache_key):
+        with scenario_context(name, description, effective_key):
             await simulation.run_script(script if script is not None else [proceed()])
     except AssertionError as exc:
-        finish(failure_reason=f"assertion in script: {exc}")
-        raise
+        return finish(failure_reason=f"assertion in script: {exc}"), exc
     except SimulationHarnessError as exc:
         # The harness broke, not the product: WARN in reports, so judge,
-        # simulator and gateway failures do not drag the pass rate down. Still
-        # re-raised: a plain pytest run must see the scenario did not finish.
+        # simulator and gateway failures do not drag the pass rate down. run()
+        # still re-raises: a plain pytest run must see the scenario did not finish.
         logger.warning("[%s] harness failure: %r", name, exc)
-        finish(failure_reason=f"harness failure: {exc!r}", harness_error=True)
-        raise
+        return finish(failure_reason=f"harness failure: {exc!r}", harness_error=True), exc
     except Exception as exc:
         # Full traceback to the log, a short reason in the report.
         logger.exception("[%s] scenario run failed", name)
-        finish(failure_reason=f"runtime error: {exc!r}")
-        raise
-    return finish()
+        return finish(failure_reason=f"runtime error: {exc!r}"), exc
+    return finish(), None
+
+
+async def run_trials(
+    name: str,
+    description: str,
+    agents: Sequence[object] | Callable[[], Sequence[object]],
+    script: Sequence[ScriptStep] | Callable[[Sequence[object]], Sequence[ScriptStep]] | None = None,
+    *,
+    trials: int | None = None,
+    min_pass_rate: float = 1.0,
+    concurrency: int = 1,
+    max_turns: int | None = None,
+    min_turns: int | None = None,
+    verbose: bool | None = None,
+    debug: bool | None = None,
+    cache_key: str | None = None,
+) -> TrialsResult:
+    """Play the same scenario ``trials`` times and report how reliably it passes.
+
+    An agent that passes once may fail the next time on the same input, so one
+    green run says little. The :class:`TrialsResult` holds every trial's
+    :class:`ScenarioResult` and the reliability numbers over them: the pass
+    rate, ``pass_hat(k)`` (the chance that k trials in a row all pass, the
+    pass^k of tau-bench) and whether the scenario is flaky.
+
+    Nothing is raised for a failed trial: a script assertion, a harness
+    failure or a runtime error ends that trial (recorded on its result, the
+    exception kept in ``TrialsResult.errors``) and the next one starts. Assert
+    on the outcome instead::
+
+        outcome = await sim.run_trials(name=..., description=..., agents=make_agents, trials=5)
+        assert outcome.success, outcome.failure_summary()
+
+    ``agents`` is the usual list, or a zero-argument factory called once per
+    trial. Use the factory for anything that keeps state between calls: a
+    :class:`RedTeamAgent`, an adapter around a stateful agent object. ``script``
+    may be a function of the trial's agents for the same reason
+    (``lambda agents: agents[1].marathon_script()``).
+
+    ``trials`` falls back to :func:`configure` (``--sim-trials``), which starts
+    at 3. ``min_pass_rate`` is the share of judged trials (PASS + FAIL) that has
+    to pass for ``success``; WARN trials are left out, as in every pass rate
+    here. ``concurrency`` runs that many trials at a time; keep it at 1 when the
+    agent or its clients are process-wide singletons. With a cache key each
+    trial gets its own entries, so a rerun replays every trial as it went.
+    """
+    config = get_config()
+    count = config.trials if trials is None else trials
+    if count < 1:
+        raise ValueError(f"trials must be at least 1, got {count}")
+    if not 0.0 <= min_pass_rate <= 1.0:
+        raise ValueError(f"min_pass_rate must be between 0 and 1, got {min_pass_rate}")
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be at least 1, got {concurrency}")
+    gate = asyncio.Semaphore(concurrency)
+
+    async def one(trial: int) -> tuple[ScenarioResult, Exception | None]:
+        async with gate:
+            trial_agents = cast("Sequence[object]", agents() if callable(agents) else agents)
+            trial_script = cast("Sequence[ScriptStep] | None", script(trial_agents) if callable(script) else script)
+            return await _play(
+                name,
+                description,
+                trial_agents,
+                trial_script,
+                max_turns=max_turns,
+                min_turns=min_turns,
+                verbose=verbose,
+                debug=debug,
+                cache_key=cache_key,
+                trial=trial,
+                trials=count,
+            )
+
+    played = await asyncio.gather(*(one(trial) for trial in range(1, count + 1)))
+    return TrialsResult(
+        name=name,
+        results=[result for result, _ in played],
+        errors=[error for _, error in played],
+        min_pass_rate=min_pass_rate,
+    )

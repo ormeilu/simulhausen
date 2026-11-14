@@ -369,6 +369,8 @@ def test_to_json_of_nothing() -> None:
         "failed": 0,
         "warned": 0,
         "pass_rate": 0.0,
+        "usage": None,
+        "reliability": [],
         "scenarios": [],
     }
 
@@ -548,3 +550,110 @@ def test_render_console_keeps_square_brackets_in_user_text(
     assert "[smoke] refund" in out
     assert "expected [a, b] but got [/c]" in out
     assert "mentions [search] results" in out
+
+
+# -- usage and trials ---------------------------------------------------------
+
+
+def _trial_records() -> list[ScenarioRecord]:
+    flaky = [replace(_result("flaky", success=index != 2), trial=index, trials=3) for index in (1, 2, 3)]
+    steady = [replace(_result("steady"), trial=index, trials=2) for index in (2, 1)]
+    unverified = replace(_result("shaky", success=False, verdicts=[_verdict("inconclusive")]), trial=1, trials=1)
+    single = replace(_result("single"), usage=sim.Usage(1000, 234, requests=3, cost=0.0123))
+    flaky[0] = replace(flaky[0], usage=sim.Usage(10, 5))
+    records = _records(single)
+    records += [ScenarioRecord(result=result, test_id="t.py::test_trials") for result in (*flaky, *steady, unverified)]
+    return records
+
+
+def test_summarize_groups_trials_and_sums_usage() -> None:
+    stats = summarize(_trial_records())
+
+    assert stats.usage == sim.Usage(1010, 239, 1249, requests=3, cost=0.0123)
+    assert [(group.name, group.trials, group.passed) for group in stats.reliability] == [
+        ("flaky", 3, 2),
+        ("steady", 2, 2),
+        ("shaky", 1, 0),
+    ]
+    assert [result.trial for result in stats.reliability[1].results] == [1, 2]
+    assert stats.flaky == 1
+    assert summarize(_records(_result())).usage is None
+    assert summarize(_records(_result())).reliability == []
+
+
+def test_the_same_name_in_two_tests_is_two_groups() -> None:
+    records = [
+        ScenarioRecord(result=replace(_result("same"), trial=1, trials=1), test_id=test_id)
+        for test_id in ("a.py::one", "b.py::two")
+    ]
+
+    assert len(summarize(records).reliability) == 2
+
+
+def test_markdown_shows_usage_trials_and_reliability() -> None:
+    text = to_markdown(_trial_records())
+
+    assert "| flaky (trial 2/3) | ❌ FAIL |" in text
+    assert "<b>flaky (trial 1/3)</b>" in text
+    assert "**Agent usage:** 15 tokens (10 in / 5 out)" in text
+    assert "<summary>🎲 <b>Reliability over trials</b> (3 scenario(s), 1 flaky)</summary>" in text
+    assert "| flaky 🎲 | 3 | 2 | 1 | 0 | 67% | 0.00 |" in text
+    assert "| steady | 2 | 2 | 0 | 0 | 100% | 1.00 |" in text
+    assert "| shaky | 1 | 0 | 0 | 1 | - | - |" in text
+    assert "| Agent usage | 1,249 tokens (1,010 in / 239 out), 3 model request(s), $0.0123 |" in text
+    assert "| Reliability | 3 scenario(s) played in trials, 1 flaky |" in text
+
+
+def test_markdown_without_usage_or_trials_has_neither_section() -> None:
+    text = to_markdown(_records(_result()))
+
+    assert "Agent usage" not in text
+    assert "Reliability" not in text
+    assert "(trial" not in text
+
+
+def test_console_shows_usage_and_the_reliability_table(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMNS", "400")
+
+    render_console(_trial_records())
+
+    out = capsys.readouterr().out
+    assert "flaky (trial 2/3)" in out
+    assert "agent usage 1,249 tokens (1,010 in / 239 out), 3 model request(s), $0.0123" in out
+    assert "Reliability over trials (1 flaky)" in out
+    assert re.search(r"flaky \(flaky\)\s+│\s+3\s+│\s+2\s+│\s+1\s+│\s+0\s+│\s+67%\s+│\s+0\.00", out)
+    assert re.search(r"shaky\s+│\s+1\s+│\s+0\s+│\s+0\s+│\s+1\s+│\s+-\s+│\s+-", out)
+
+
+def test_json_carries_usage_trials_and_reliability_through_the_round_trip() -> None:
+    records = _trial_records()
+
+    payload = json.loads(to_json(records))
+
+    assert payload["usage"] == {
+        "input_tokens": 1010,
+        "output_tokens": 239,
+        "total_tokens": 1249,
+        "requests": 3,
+        "cost": 0.0123,
+    }
+    assert payload["reliability"][0] == {
+        "name": "flaky",
+        "trials": 3,
+        "passed": 2,
+        "failed": 1,
+        "warned": 0,
+        "pass_rate": 0.6667,
+        "pass_hat": 0.0,
+        "flaky": True,
+    }
+    assert payload["reliability"][2]["pass_rate"] is None
+    assert payload["reliability"][2]["pass_hat"] is None
+    assert payload["scenarios"][0]["usage"]["cost"] == 0.0123
+    assert (payload["scenarios"][2]["trial"], payload["scenarios"][2]["trials"]) == (2, 3)
+    restored = deserialize_records(serialize_records(records))
+    assert [(r.result.trial, r.result.trials, r.result.usage) for r in restored] == [
+        (r.result.trial, r.result.trials, r.result.usage) for r in records
+    ]

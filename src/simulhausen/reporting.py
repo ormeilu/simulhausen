@@ -9,7 +9,15 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from simulhausen.config import get_config
-from simulhausen.types import CriterionVerdict, JudgeCall, JudgeScore, ScenarioResult, ScenarioStatus
+from simulhausen.types import (
+    CriterionVerdict,
+    JudgeCall,
+    JudgeScore,
+    ScenarioResult,
+    ScenarioStatus,
+    TrialsResult,
+    Usage,
+)
 
 if TYPE_CHECKING:
     from simulhausen.types import Message
@@ -21,6 +29,7 @@ __all__ = [
     "SummaryStats",
     "collector",
     "deserialize_records",
+    "group_trials",
     "render_console",
     "serialize_records",
     "summarize",
@@ -125,6 +134,15 @@ class SummaryStats:
     agent_time: float
     judge_time: float = 0.0
     simulator_time: float = 0.0
+    # Tokens, model requests and cost of the agent under test; None when no scenario reported any.
+    usage: Usage | None = None
+    # Scenarios played several times (run_trials), one entry per scenario.
+    reliability: list[TrialsResult] = field(default_factory=list)
+
+    @property
+    def flaky(self) -> int:
+        """Scenarios whose trials both passed and failed."""
+        return sum(1 for trials in self.reliability if trials.flaky)
 
     @property
     def failed(self) -> int:
@@ -140,6 +158,44 @@ class SummaryStats:
         """Share of passed among judged scenarios. WARN is neither numerator nor
         denominator: a scenario that could not be verified says nothing about the agent."""
         return self.passed / self.judged * 100 if self.judged else 0.0
+
+
+def group_trials(records: list[ScenarioRecord]) -> list[TrialsResult]:
+    """The records that came from ``run_trials``, grouped back into one entry per scenario (per test)."""
+    groups: dict[tuple[str | None, str], TrialsResult] = {}
+    for record in records:
+        if record.result.trials is None:
+            continue
+        group = groups.setdefault((record.test_id, record.result.name), TrialsResult(name=record.result.name))
+        group.results.append(record.result)
+    for group in groups.values():
+        group.results.sort(key=lambda result: result.trial or 0)
+    return list(groups.values())
+
+
+def _total_usage(results: list[ScenarioResult]) -> Usage | None:
+    total: Usage | None = None
+    for result in results:
+        if result.usage is not None:
+            total = result.usage if total is None else total + result.usage
+    return total
+
+
+def _usage_text(usage: Usage) -> str:
+    """``12,345 tokens (10,000 in / 2,345 out), 7 model requests, $0.0123``; the parts the source reported."""
+    text = f"{usage.total_tokens:,} tokens ({usage.input_tokens:,} in / {usage.output_tokens:,} out)"
+    if usage.requests:
+        text += f", {usage.requests} model request(s)"
+    if usage.cost is not None:
+        text += f", ${usage.cost:.4f}"
+    return text
+
+
+def _label(result: ScenarioResult) -> str:
+    """The scenario name, with ``(trial 2/5)`` for a run_trials() trial."""
+    if result.trial is None or result.trials is None:
+        return result.name
+    return f"{result.name} (trial {result.trial}/{result.trials})"
 
 
 def summarize(records: list[ScenarioRecord]) -> SummaryStats:
@@ -163,6 +219,8 @@ def summarize(records: list[ScenarioRecord]) -> SummaryStats:
         agent_time=sum(r.agent_time for r in results),
         judge_time=sum(r.judge_time for r in results),
         simulator_time=sum(r.simulator_time for r in results),
+        usage=_total_usage(results),
+        reliability=group_trials(records),
     )
 
 
@@ -253,7 +311,7 @@ def render_console(records: list[ScenarioRecord]) -> None:
             details.append(f"[dim]{escape(result.reasoning)}[/dim]")
         tools = "\n".join(f"{i}. {escape(name)}" for i, name in enumerate(result.tool_calls, 1)) or "-"
         table.add_row(
-            escape(result.name),
+            escape(_label(result)),
             _CONSOLE_STATUS[result.status],
             str(result.turns),
             f"{result.total_time:.1f}s",
@@ -273,8 +331,23 @@ def render_console(records: list[ScenarioRecord]) -> None:
         f"turns {stats.turns_total}; tool calls {stats.tool_calls_total} "
         f"({len(stats.unique_tools)} unique); script/runtime errors {stats.script_errors}; "
         f"time {stats.total_time:.1f}s (agent {stats.agent_time:.1f}s, judge {stats.judge_time:.1f}s, "
-        f"simulator {stats.simulator_time:.1f}s)"
+        f"simulator {stats.simulator_time:.1f}s)" + (f"; agent usage {_usage_text(stats.usage)}" if stats.usage else "")
     )
+    if stats.reliability:
+        reliability = Table(title=f"Reliability over trials ({stats.flaky} flaky)", title_style="bold")
+        for column in ("Scenario", "Trials", "PASS", "FAIL", "WARN", "Pass rate", "pass^k"):
+            reliability.add_column(column, justify="left" if column == "Scenario" else "right", overflow="fold")
+        for trials in stats.reliability:
+            reliability.add_row(
+                escape(trials.name) + (" [yellow](flaky)[/yellow]" if trials.flaky else ""),
+                str(trials.trials),
+                str(trials.passed),
+                str(trials.failed),
+                str(trials.warned),
+                f"{trials.pass_rate:.0%}" if trials.judged else "-",
+                f"{trials.pass_hat():.2f}" if trials.judged else "-",
+            )
+        console.print(reliability)
 
 
 def _md_escape(text: str) -> str:
@@ -338,7 +411,7 @@ def to_markdown(records: list[ScenarioRecord]) -> str:
         result = record.result
         tools = " → ".join(f"`{name}`" for name in result.tool_calls) or "-"
         lines.append(
-            f"| {_md_escape(result.name)} | {_MD_STATUS[result.status]} | {_criteria_count(result)} "
+            f"| {_md_escape(_label(result))} | {_MD_STATUS[result.status]} | {_criteria_count(result)} "
             f"| {result.turns} | {result.total_time:.1f}s | {tools} |"
         )
     lines += ["", "</details>", ""]
@@ -352,7 +425,7 @@ def to_markdown(records: list[ScenarioRecord]) -> str:
             "<details>",
             (
                 f"<summary>{_MD_STATUS[result.status]} ({_criteria_count(result)}) · "
-                f"<b>{_html_escape(result.name)}</b> · {result.turns} turn(s)</summary>"
+                f"<b>{_html_escape(_label(result))}</b> · {result.turns} turn(s)</summary>"
             ),
             "",
         ]
@@ -375,10 +448,38 @@ def to_markdown(records: list[ScenarioRecord]) -> str:
             lines += [f"- {_MD_MARK[v.status]} {v.criterion}: _{v.reasoning}_" for v in result.verdicts]
         if result.tool_calls:
             lines += ["", "**Tools:** " + " → ".join(f"`{name}`" for name in result.tool_calls)]
+        if result.usage:
+            lines += ["", f"**Agent usage:** {_usage_text(result.usage)}"]
         if history := _chat_history(result.messages):
             lines += ["", "**Dialogue:**", "", "```text", history, "```"]
         lines += ["", "</details>", ""]
     lines += ["</details>", ""]
+
+    if stats.reliability:
+        lines += [
+            "<details>",
+            (
+                f"<summary>🎲 <b>Reliability over trials</b> ({len(stats.reliability)} scenario(s), "
+                f"{stats.flaky} flaky)</summary>"
+            ),
+            "",
+            "| Scenario | Trials | PASS | FAIL | WARN | Pass rate | pass^k |",
+            "|---|--:|--:|--:|--:|--:|--:|",
+        ]
+        for trials in stats.reliability:
+            rate = f"{trials.pass_rate:.0%}" if trials.judged else "-"
+            pass_hat = f"{trials.pass_hat():.2f}" if trials.judged else "-"
+            lines.append(
+                f"| {_md_escape(trials.name)}{' 🎲' if trials.flaky else ''} | {trials.trials} | {trials.passed} "
+                f"| {trials.failed} | {trials.warned} | {rate} | {pass_hat} |"
+            )
+        lines += [
+            "",
+            "pass^k is the chance that k trials in a row all pass (k = judged trials); 🎲 marks a flaky scenario.",
+            "",
+            "</details>",
+            "",
+        ]
 
     lines += [
         "### 📊 Summary",
@@ -404,8 +505,12 @@ def to_markdown(records: list[ScenarioRecord]) -> str:
             f"| Time | {stats.total_time:.1f}s total: {stats.agent_time:.1f}s in the agent, "
             f"{stats.judge_time:.1f}s in the judge, {stats.simulator_time:.1f}s in the user simulator |"
         ),
-        "",
     ]
+    if stats.usage:
+        lines.append(f"| Agent usage | {_usage_text(stats.usage)} |")
+    if stats.reliability:
+        lines.append(f"| Reliability | {len(stats.reliability)} scenario(s) played in trials, {stats.flaky} flaky |")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -425,6 +530,20 @@ def to_json(records: list[ScenarioRecord], *, evidence: bool = False) -> str:
         "failed": stats.failed,
         "warned": stats.warned,
         "pass_rate": round(stats.pass_rate, 2),
+        "usage": stats.usage.to_dict() if stats.usage else None,
+        "reliability": [
+            {
+                "name": trials.name,
+                "trials": trials.trials,
+                "passed": trials.passed,
+                "failed": trials.failed,
+                "warned": trials.warned,
+                "pass_rate": round(trials.pass_rate, 4) if trials.judged else None,
+                "pass_hat": round(trials.pass_hat(), 4) if trials.judged else None,
+                "flaky": trials.flaky,
+            }
+            for trials in stats.reliability
+        ],
         "scenarios": serialize_records(records, evidence=evidence),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -448,6 +567,9 @@ def serialize_records(records: list[ScenarioRecord], *, evidence: bool = False) 
             "agent_time": record.result.agent_time,
             "judge_time": record.result.judge_time,
             "simulator_time": record.result.simulator_time,
+            "usage": record.result.usage.to_dict() if record.result.usage else None,
+            "trial": record.result.trial,
+            "trials": record.result.trials,
             "judge_score": record.result.judge_score.model_dump(mode="json") if record.result.judge_score else None,
             "verdicts": [verdict.model_dump(mode="json") for verdict in record.result.verdicts],
             "messages": [dict(message) for message in record.result.messages],
@@ -466,6 +588,7 @@ def deserialize_records(payload: list[dict[str, Any]]) -> list[ScenarioRecord]:
     records: list[ScenarioRecord] = []
     for item in payload:
         judge_score = item.get("judge_score")
+        usage, trial, trials = item.get("usage"), item.get("trial"), item.get("trials")
         messages: list[Message] = [
             {"role": "assistant" if message["role"] == "assistant" else "user", "content": str(message["content"])}
             for message in item.get("messages") or []
@@ -490,6 +613,9 @@ def deserialize_records(payload: list[dict[str, Any]]) -> list[ScenarioRecord]:
                     judge_score=JudgeScore.model_validate(judge_score) if judge_score is not None else None,
                     verdicts=[CriterionVerdict.model_validate(verdict) for verdict in item.get("verdicts") or []],
                     messages=messages,
+                    usage=Usage.from_dict(usage) if usage else None,
+                    trial=int(trial) if trial is not None else None,
+                    trials=int(trials) if trials is not None else None,
                 ),
             )
         )

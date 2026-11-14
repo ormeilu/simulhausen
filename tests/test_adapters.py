@@ -365,3 +365,14 @@ async def test_transcript_history_replays_the_dialogue_in_a_fresh_session() -> N
 def test_unknown_history_mode_is_rejected() -> None:
     with pytest.raises(ValueError, match="history must be"):
         sim.agno_adapter(cast(Agent, FakeTarget()), history=cast(Any, "memory"))
+
+
+async def test_run_metrics_become_the_turn_usage() -> None:
+    metrics = SimpleNamespace(input_tokens=30, output_tokens=6, total_tokens=36, cost=0.001)
+    with_usage = _ok()
+    with_usage.metrics = metrics
+    target = FakeTarget(with_usage, _ok())
+    adapter = _adapter(target)
+
+    assert (await _turn(adapter)).usage == sim.Usage(30, 6, 36, cost=0.001)
+    assert (await _turn(adapter)).usage is None

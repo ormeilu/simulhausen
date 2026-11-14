@@ -57,6 +57,8 @@ class SimulationConfig:
     # function decorated with simulhausen.cache() are replayed from disk on a re-run.
     # Change the key to start from scratch. None turns caching off.
     cache_key: str | None = None
+    # How many times run_trials() plays a scenario when it is not told (--sim-trials).
+    trials: int = 3
 
 
 _config = SimulationConfig()
@@ -73,6 +75,7 @@ def configure(
     agent_name: str | None = None,
     user_name: str | None = None,
     cache_key: str | None = None,
+    trials: int | None = None,
 ) -> None:
     """Set simulation defaults; call once, e.g. from a session-scoped fixture.
 
@@ -100,6 +103,10 @@ def configure(
         _config.user_name = user_name
     if cache_key is not None:
         _config.cache_key = check_cache_key(cache_key)
+    if trials is not None:
+        if trials < 1:
+            raise ValueError("trials must be at least 1")
+        _config.trials = trials
 
 
 def get_config() -> SimulationConfig:
